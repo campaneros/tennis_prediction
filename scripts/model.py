@@ -1,12 +1,18 @@
 import os
-import numpy as np
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 from .data_loader import load_points_multiple, WINDOW
-from .features import add_match_labels, add_rolling_serve_return_features, build_dataset
 
+from .data_loader import load_points_multiple
+from .features import (
+    add_match_labels,
+    add_rolling_serve_return_features,
+    add_leverage_and_momentum,
+    build_dataset,
+)
+from .config import load_config
 
 def _default_model():
     return XGBClassifier(
@@ -23,16 +29,30 @@ def _default_model():
     )
 
 
-def train_model(file_paths, model_out: str):
+def train_model(file_paths, model_out: str, config_path: str | None = None):
+    """
+    Train the XGBoost model on one or more CSV files and save it to 'model_out'.
+
+    Feature parameters (long_window, short_window, momentum_alpha) are loaded
+    from the JSON config.
+    """
     if not file_paths:
         raise ValueError("train_model: no input files provided")
 
+    cfg = load_config(config_path)
+    fcfg = cfg.get("features", {})
+    long_window = int(fcfg.get("long_window", 20))
+    short_window = int(fcfg.get("short_window", 5))
+    alpha = float(fcfg.get("momentum_alpha", 1.2))
+
     df = load_points_multiple(file_paths)
     df = add_match_labels(df)
-    df = add_rolling_serve_return_features(df, window=WINDOW)
+    df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
+    df = add_leverage_and_momentum(df, alpha=alpha)
 
     X, y, _ = build_dataset(df)
     print("[train] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
+    print(f"[train] long_window={long_window}, short_window={short_window}, alpha={alpha}")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
@@ -56,7 +76,6 @@ def train_model(file_paths, model_out: str):
     os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
     model.save_model(model_out)
     print(f"[train] Model saved to: {model_out}")
-
 
 def load_model(model_path: str) -> XGBClassifier:
     if not os.path.exists(model_path):

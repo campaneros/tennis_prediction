@@ -1,0 +1,7 @@
+{
+  "features": {
+    "long_window": 20,
+    "short_window": 5,
+    "momentum_alpha": 1.2
+  }
+}

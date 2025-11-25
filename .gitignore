@@ -1,0 +1,12 @@
+*.json
+venv/
+*.png
+*plot*
+*__pycache__*
+*egg-info*
+
+# But keep JSON files inside configs/
+!configs/*.json
+
+# And keep the configs folder itself
+!configs/

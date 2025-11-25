@@ -13,31 +13,49 @@ from sklearn.metrics import (
 )
 
 from .data_loader import load_points_multiple, WINDOW
-from .features import add_match_labels, add_rolling_serve_return_features, build_dataset
+from .config import load_config
+from .features import (
+    add_match_labels,
+    add_rolling_serve_return_features,
+    add_leverage_and_momentum,
+    build_dataset,
+)
 from .plotting import plot_hyperopt_results, plot_confusion_matrix_and_roc
 
-
-def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
+def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_path: str | None = None):
     """
     Run RandomizedSearchCV hyperparameter optimisation on the given files.
 
     - Uses 5-fold CV.
-    - Tracks mean accuracy, precision, recall, F1, and AUC for each model.
+    - Tracks mean Accuracy, Precision, Recall, F1, and AUC for each model.
     - Saves the best model to 'model_out'.
-    - Writes a CSV with metrics for all tested models.
-    - For the best model, builds a 5-fold CV confusion matrix and ROC curve
-      with label convention: 0 = Player 1 wins, 1 = Player 2 wins.
+    - Writes a CSV with CV metrics for all tested models.
+    - For *every* model in the hyperparameter scan, computes a 5-fold CV
+      confusion matrix + ROC curve and saves a figure.
+
+      Label convention for confusion/ROC:
+        0 = Player 1 wins
+        1 = Player 2 (rival) wins
     """
     os.makedirs(plot_dir, exist_ok=True)
     os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
+     cfg = load_config(config_path)
+    fcfg = cfg.get("features", {})
+    long_window = int(fcfg.get("long_window", 20))
+    short_window = int(fcfg.get("short_window", 5))
+    alpha = float(fcfg.get("momentum_alpha", 1.2))
 
     # ------------------------------------------------------------------
     # Load and build features
     # ------------------------------------------------------------------
     df = load_points_multiple(file_paths)
     df = add_match_labels(df)
-    df = add_rolling_serve_return_features(df, window=WINDOW)
+    df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
+    df = add_leverage_and_momentum(df, alpha=alpha)
     X, y, _ = build_dataset(df)
+
+    print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
+    print(f"[hyperopt] long_window={long_window}, short_window={short_window}, alpha={alpha}")
 
     print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
 
@@ -62,7 +80,6 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
         "gamma":            [0.0, 0.1, 0.3, 0.5],
     }
 
-    # Multiple metrics; refit on best AUC
     scoring = {
         "roc_auc": "roc_auc",
         "accuracy": "accuracy",
@@ -77,7 +94,7 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
         n_iter=n_iter,
         scoring=scoring,
         refit="roc_auc",          # best model chosen by mean AUC
-        cv=5,                     # 5-fold CV
+        cv=5,
         verbose=1,
         random_state=42,
         n_jobs=-1,
@@ -91,14 +108,14 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
     print(f"[hyperopt] Best CV ROC AUC: {search.best_score_:.3f}")
 
     # ------------------------------------------------------------------
-    # Save tuned model
+    # Save tuned "best" model
     # ------------------------------------------------------------------
     best_model = search.best_estimator_
     best_model.save_model(model_out)
     print(f"[hyperopt] Tuned model saved to: {model_out}")
 
     # ------------------------------------------------------------------
-    # Save per-model CV metrics (for all hyperparameter points)
+    # Save per-model CV metrics (from RandomizedSearchCV) for all models
     # ------------------------------------------------------------------
     results_df = pd.DataFrame(search.cv_results_)
 
@@ -109,7 +126,6 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
         "mean_test_recall",
         "mean_test_f1",
     ]
-    # Map from scoring keys to cv_results_ column names
     rename_map = {
         "mean_test_roc_auc": "AUC",
         "mean_test_accuracy": "Accuracy",
@@ -118,7 +134,6 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
         "mean_test_f1": "F1",
     }
 
-    # Extract parameters and metrics
     param_cols = [c for c in results_df.columns if c.startswith("param_")]
     metrics_df = results_df[param_cols + metric_cols].copy()
     metrics_df = metrics_df.rename(columns=rename_map)
@@ -128,64 +143,64 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str):
     print(f"[hyperopt] Per-model CV metrics written to: {metrics_csv}")
 
     # ------------------------------------------------------------------
-    # Hyperparameter diagnostic plots (AUC vs params, etc.)
+    # AUC vs hyperparameters plots, histogram, etc.
     # ------------------------------------------------------------------
     plot_hyperopt_results(search.cv_results_, plot_dir, prefix="hyperopt")
     print(f"[hyperopt] Hyperparameter plots written in: {plot_dir}")
 
     # ------------------------------------------------------------------
-    # 5-fold CV evaluation for the best model: confusion matrix + ROC
+    # For *every* model: 5-fold CV confusion matrix + ROC curve
     # ------------------------------------------------------------------
-    print("[hyperopt] Building 5-fold CV confusion matrix and ROC for best model...")
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    y_cm = 1 - y  # 0 = P1 wins, 1 = P2 wins
 
-    # Cross-validated predicted probabilities for the "P1 wins" class (label 1)
-    y_proba_p1 = cross_val_predict(
-        best_model, X, y, cv=cv, method="predict_proba"
-    )[:, 1]
+    all_params = search.cv_results_["params"]
+    print("[hyperopt] Computing confusion matrix + ROC for all models...")
+    for idx, params in enumerate(all_params):
+        model_i = XGBClassifier(
+            objective="binary:logistic",
+            eval_metric="logloss",
+            tree_method="hist",
+            n_jobs=-1,
+            random_state=42,
+        )
+        model_i.set_params(**params)
 
-    # ------------------------------------------------------------------
-    # For the confusion matrix and ROC we use the paper's convention:
-    #   0 = Player 1 wins (our y = 1)
-    #   1 = Player 2 wins (our y = 0)
-    #
-    # So we flip the labels:
-    #   y_cm = 1 - y
-    #   p(P2 wins) = 1 - p(P1 wins)
-    # ------------------------------------------------------------------
-    y_cm = 1 - y
-    y_proba_p2 = 1.0 - y_proba_p1
+        # Cross-validated probabilities for "P1 wins" (class 1 in y)
+        y_proba_p1 = cross_val_predict(
+            model_i, X, y, cv=cv, method="predict_proba"
+        )[:, 1]
 
-    # Hard predictions with threshold 0.5 on "P2 wins"
-    y_pred_cm = (y_proba_p2 >= 0.5).astype(int)
+        # Flip to P2 probability + predictions for (0=P1,1=P2) convention
+        y_proba_p2 = 1.0 - y_proba_p1
+        y_pred_cm = (y_proba_p2 >= 0.5).astype(int)
 
-    cm = confusion_matrix(y_cm, y_pred_cm, labels=[0, 1])
+        cm = confusion_matrix(y_cm, y_pred_cm, labels=[0, 1])
 
-    # Global metrics (using the 0/1 coding P1/P2)
-    auc_value = roc_auc_score(y_cm, y_proba_p2)
-    acc_value = accuracy_score(y_cm, y_pred_cm)
-    prec_value = precision_score(y_cm, y_pred_cm, zero_division=0)
-    rec_value = recall_score(y_cm, y_pred_cm, zero_division=0)
-    f1_value = f1_score(y_cm, y_pred_cm, zero_division=0)
+        auc_value = roc_auc_score(y_cm, y_proba_p2)
+        acc_value = accuracy_score(y_cm, y_pred_cm)
+        prec_value = precision_score(y_cm, y_pred_cm, zero_division=0)
+        rec_value = recall_score(y_cm, y_pred_cm, zero_division=0)
+        f1_value = f1_score(y_cm, y_pred_cm, zero_division=0)
 
-    print("[hyperopt] Best-model CV metrics (5-fold, P1=0, P2=1):")
-    print(f"  Accuracy : {acc_value:.3f}")
-    print(f"  Precision: {prec_value:.3f}")
-    print(f"  Recall   : {rec_value:.3f}")
-    print(f"  F1 score : {f1_value:.3f}")
-    print(f"  AUC      : {auc_value:.3f}")
+        prefix = f"model_{idx:03d}"
+        print(
+            f"[hyperopt] Model {idx:03d}: "
+            f"AUC={auc_value:.3f}, Acc={acc_value:.3f}, "
+            f"Prec={prec_value:.3f}, Rec={rec_value:.3f}, F1={f1_value:.3f}"
+        )
 
-    # Plot confusion matrix + ROC curve in a single figure
-    plot_confusion_matrix_and_roc(
-        cm=cm,
-        y_true=y_cm,
-        y_score=y_proba_p2,
-        auc_value=auc_value,
-        acc_value=acc_value,
-        prec_value=prec_value,
-        rec_value=rec_value,
-        f1_value=f1_value,
-        plot_dir=plot_dir,
-        filename_prefix="best_model_cv",
-    )
-    print(f"[hyperopt] Confusion matrix + ROC figure saved in: {plot_dir}")
+        plot_confusion_matrix_and_roc(
+            cm=cm,
+            y_true=y_cm,
+            y_score=y_proba_p2,
+            auc_value=auc_value,
+            acc_value=acc_value,
+            prec_value=prec_value,
+            rec_value=rec_value,
+            f1_value=f1_value,
+            plot_dir=plot_dir,
+            filename_prefix=prefix,
+        )
+
+    print(f"[hyperopt] Confusion + ROC figures saved in: {plot_dir}")
