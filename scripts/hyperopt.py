@@ -39,11 +39,14 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     """
     os.makedirs(plot_dir, exist_ok=True)
     os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
-     cfg = load_config(config_path)
+    cfg = load_config(config_path)
     fcfg = cfg.get("features", {})
+    print(f"{fcfg}")
     long_window = int(fcfg.get("long_window", 20))
     short_window = int(fcfg.get("short_window", 5))
     alpha = float(fcfg.get("momentum_alpha", 1.2))
+    print(f"[hyperopt] long_window={long_window}, short_window={short_window}, alpha={alpha}")
+
 
     # ------------------------------------------------------------------
     # Load and build features
@@ -53,11 +56,8 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_leverage_and_momentum(df, alpha=alpha)
     X, y, _ = build_dataset(df)
-
     print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
-    print(f"[hyperopt] long_window={long_window}, short_window={short_window}, alpha={alpha}")
 
-    print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
 
     base_model = XGBClassifier(
         objective="binary:logistic",

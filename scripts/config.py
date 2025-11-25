@@ -3,17 +3,17 @@ import os
 from copy import deepcopy
 
 # Default values used if config.json is missing or partial
-_DEFAULT_CONFIG = {
-    "features": {
-        "long_window": 20,
-        "short_window": 5,
-        "momentum_alpha": 1.2  # can be >1 as long as <2
-    }
-}
+#_DEFAULT_CONFIG = {
+#    "features": {
+#        "long_window": 20,
+#        "short_window": 5,
+#        "momentum_alpha": 1.2  # can be >1 as long as <2
+#    }
+#}
 
 # Default config path: project_root/config.json
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-DEFAULT_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
+#DEFAULT_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 
 
 def _deep_update(dst: dict, src: dict) -> dict:
@@ -34,17 +34,15 @@ def load_config(path: str | None = None) -> dict:
       - try DEFAULT_CONFIG_PATH
       - if it does not exist, return default config
     """
-    cfg = deepcopy(_DEFAULT_CONFIG)
+    #cfg = deepcopy(_DEFAULT_CONFIG)
 
-    if path is None:
-        path = DEFAULT_CONFIG_PATH
-
-    if not os.path.exists(path):
-        # No user config → just defaults
-        return cfg
-
+    print(f"{path}")
     with open(path, "r") as f:
-        user_cfg = json.load(f)
+        try:
+            cfg = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Invalid JSON in config file '{path}': {e}"
+            ) from e
 
-    _deep_update(cfg, user_cfg)
     return cfg

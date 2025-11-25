@@ -61,9 +61,9 @@ def add_match_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_rolling_serve_return_features(
     df: pd.DataFrame,
-    long_window: int = WINDOW,
-    short_window: int = SHORT_WINDOW,
-) -> pd.DataFrame:
+    long_window: int,
+    short_window: int,
+    ) -> pd.DataFrame:
     """
     Build Depken-style rolling serve/return features at two time scales:
 
