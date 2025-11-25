@@ -15,7 +15,6 @@ help:
 venv:
 	$(PYTHON) -m venv $(VENV)
 	@echo "Activate with: source $(VENV)/bin/activate"
-	source $(VENV)/bin/activate
 
 install:
 	$(VENV)/bin/python3 -m pip install --upgrade pip
