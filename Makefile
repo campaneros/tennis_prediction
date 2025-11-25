@@ -17,9 +17,9 @@ venv:
 	@echo "Activate with: source $(VENV)/bin/activate"
 
 install:
-	python -m pip install --upgrade pip
-	pip install -r requirements.txt
-	pip install -e .
+	pytho3 -m pip install --upgrade pip
+	pip3 install -r requirements.txt
+	pip3 install -e .
 
 test:
 	pytest -v
