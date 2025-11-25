@@ -35,6 +35,7 @@ pytest -v
 tennisctl train \
   --files data/2021-wimbledon-points.csv \
   --model-out models/xgb_baseline.json
+  --config configs/config.json
 ```
 
 # 3.  Hyperparameter optimisation (5-fold CV)
@@ -44,6 +45,7 @@ tennisctl hyperopt \
   --n-iter 30 \
   --plot-dir hyperopt_plots \
   --model-out models/xgb_tuned.json
+  --config configs/config.json
 ```
 
 
