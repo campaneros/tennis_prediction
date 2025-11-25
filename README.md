@@ -8,7 +8,7 @@ Below are **all the commands you need to run the code**.
 
 # 1. Setup
 
-``
+```
 git clone --recursive https://github.com/campaneros/tennis_prediction.git
 cd tennis_prediction
 ```

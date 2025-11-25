@@ -12,14 +12,16 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # TRAIN -------------------------------------------------------------
+# TRAIN
     train_p = subparsers.add_parser("train", help="Train a model")
     train_p.add_argument("--files", nargs="+", required=True,
                          help="List of CSV point-by-point files")
     train_p.add_argument("--model-out", required=True,
                          help="Path to save trained model (JSON)")
+    train_p.add_argument("--config", default=None,
+                         help="Path to JSON config file (default: config.json)")
 
-    # PREDICT -----------------------------------------------------------
+    # PREDICT
     pred_p = subparsers.add_parser("predict", help="Predict probabilities and plot")
     pred_p.add_argument("--files", nargs="+", required=True,
                         help="List of CSV point-by-point files")
@@ -29,8 +31,10 @@ def main():
                         help="match_id to plot (string or numeric)")
     pred_p.add_argument("--plot-dir", default="plots",
                         help="Directory to store plots")
+    pred_p.add_argument("--config", default=None,
+                        help="Path to JSON config file (default: config.json)")
 
-    # HYPEROPT ----------------------------------------------------------
+    # HYPEROPT
     hyp_p = subparsers.add_parser("hyperopt", help="Hyperparameter optimisation")
     hyp_p.add_argument("--files", nargs="+", required=True,
                        help="List of CSV point-by-point files")
@@ -40,17 +44,18 @@ def main():
                        help="Directory to store hyperopt plots")
     hyp_p.add_argument("--model-out", required=True,
                        help="Path to save tuned model JSON")
-
+    hyp_p.add_argument("--config", default=None,
+                       help="Path to JSON config file (default: config.json)")
     args = parser.parse_args()
 
     if args.command == "train":
-        train_model(args.files, args.model_out)
+        train_model(args.files, args.model_out, config_path=args.config)
 
     elif args.command == "predict":
-        run_prediction(args.files, args.model, args.match_id, args.plot_dir)
+        run_prediction(args.files, args.model, args.match_id, args.plot_dir, config_path=args.config)
 
     elif args.command == "hyperopt":
-        run_hyperopt(args.files, args.n_iter, args.plot_dir, args.model_out)
+        run_hyperopt(args.files, args.n_iter, args.plot_dir, args.model_out, config_path=args.config)
 
     else:
         parser.print_help()
