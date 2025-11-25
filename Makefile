@@ -1,6 +1,6 @@
 # Simple Makefile for tennis_prediction project
 
-PYTHON := python
+PYTHON := python3
 VENV ?= venv
 
 .PHONY: help venv install test lint clean
