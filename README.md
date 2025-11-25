@@ -35,7 +35,7 @@ pytest -v
 ```
 tennisctl train \
   --files data/2021-wimbledon-points.csv \
-  --model-out models/xgb_baseline.json
+  --model-out models/xgb_baseline.json \
   --config configs/config.json
 ```
 
