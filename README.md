@@ -16,6 +16,7 @@ cd tennis_prediction
 
 ```
 make venv
+source venv/bin/activate
 make install
 ```
 
