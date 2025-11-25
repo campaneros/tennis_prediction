@@ -10,3 +10,4 @@ venv/
 
 # And keep the configs folder itself
 !configs/
+!scripts/plotting.py
