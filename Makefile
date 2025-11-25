@@ -15,11 +15,12 @@ help:
 venv:
 	$(PYTHON) -m venv $(VENV)
 	@echo "Activate with: source $(VENV)/bin/activate"
+	source $(VENV)/bin/activate
 
 install:
 	python3 -m pip install --upgrade pip
-	pip3 install -r requirements.txt
-	pip3 install -e .
+	python3 -m pip install -r requirements.txt
+	python3 -m pip install -e .
 
 test:
 	pytest -v
