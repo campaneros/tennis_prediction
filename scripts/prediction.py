@@ -37,7 +37,8 @@ def advance_game_state_simple(row_features, server_wins_point: bool, eff_window:
     For the counterfactual, we update:
     - P_srv_win/lose (long and short) using Bayesian update
     - SrvScr/RcvScr based on outcome
-    - Leave others unchanged as approximation
+    - Score_Diff changes (approximate tennis scoring)
+    - Momentum changes based on leverage
     """
     x = row_features.copy()
     
@@ -47,6 +48,8 @@ def advance_game_state_simple(row_features, server_wins_point: bool, eff_window:
     P_win_short = float(x[2])
     P_lose_short = float(x[3])
     server = int(x[4])
+    current_momentum = float(x[5])
+    score_diff = float(x[7])
     
     # Normalize probabilities
     def normalize_probs(p_win, p_lose):
@@ -93,19 +96,43 @@ def advance_game_state_simple(row_features, server_wins_point: bool, eff_window:
     x[2] = alpha_short_new / total_short
     x[3] = beta_short_new / total_short
     
+    # Update momentum based on leverage
+    # Leverage is roughly proportional to P_srv_win - P_srv_lose
+    leverage = max(0.0, x[0] - x[1])
+    
+    if server_wins_point:
+        # Winning point increases momentum
+        x[5] = current_momentum + 0.1 * leverage
+    else:
+        # Losing point decreases momentum
+        x[5] = current_momentum - 0.1 * leverage
+    
+    # Clip momentum to reasonable range
+    x[5] = np.clip(x[5], -1.0, 1.0)
+    
+    # Update score difference (approximate tennis scoring: 0->1, 1->2, 2->3 points)
+    # Simplified: just increment/decrement by 1 unit
+    if server == 1:
+        if server_wins_point:
+            x[7] = score_diff + 1  # P1 gains
+        else:
+            x[7] = score_diff - 1  # P2 gains
+    else:
+        if server_wins_point:
+            x[7] = score_diff - 1  # P2 gains
+        else:
+            x[7] = score_diff + 1  # P1 gains
+    
     # Update SrvScr/RcvScr based on who served and won
     if server_wins_point:
-        # If server=1, increment SrvScr; if server=2, RcvScr changes for P1
         if server == 1:
             x[9] += 1  # SrvScr
-        else:
-            x[10] += 0  # RcvScr stays same (server 2 won)
+        # If server=2, P1 metrics don't change
     else:
         # Server lost
-        if server == 1:
-            x[9] += 0  # SrvScr stays same
-        else:
+        if server == 2:
             x[10] += 1  # RcvScr (P1 received and won)
+        # If server=1 lost, P1 metrics don't improve
     
     return x
 
@@ -136,6 +163,12 @@ def compute_current_and_counterfactual_probs(X, model):
         p1_lose = float(model.predict_proba(x_lose.reshape(1, -1))[:, 1])
         prob_p1_lose_srv[i] = p1_lose
         prob_p2_lose_srv[i] = 1.0 - p1_lose
+
+    # Compute and print statistics about counterfactual impact
+    diffs = np.abs(prob_p1 - prob_p1_lose_srv)
+    print(f"[counterfactual] Mean probability change: {np.mean(diffs):.4f}")
+    print(f"[counterfactual] Max probability change: {np.max(diffs):.4f}")
+    print(f"[counterfactual] Points with >5% change: {np.sum(diffs > 0.05)}/{len(diffs)}")
 
     return prob_p1, prob_p2, prob_p1_lose_srv, prob_p2_lose_srv
 
