@@ -38,8 +38,17 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
         0 = Player 1 wins
         1 = Player 2 (rival) wins
     """
-    os.makedirs(plot_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
+    # Create separate directories for grid and random search
+    search_plot_dir = os.path.join(plot_dir, search_type)
+    os.makedirs(search_plot_dir, exist_ok=True)
+    
+    # Modify model output path to include search type
+    model_dir = os.path.dirname(model_out) or "."
+    model_name = os.path.basename(model_out)
+    name_parts = os.path.splitext(model_name)
+    search_model_out = os.path.join(model_dir, f"{name_parts[0]}_{search_type}{name_parts[1]}")
+    os.makedirs(model_dir, exist_ok=True)
+    
     cfg = load_config(config_path)
     fcfg = cfg.get("features", {})
     print(f"{fcfg}")
@@ -47,6 +56,9 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     short_window = int(fcfg.get("short_window", 5))
     alpha = float(fcfg.get("momentum_alpha", 1.2))
     print(f"[hyperopt] long_window={long_window}, short_window={short_window}, alpha={alpha}")
+    print(f"[hyperopt] Search type: {search_type}")
+    print(f"[hyperopt] Output directory: {search_plot_dir}")
+    print(f"[hyperopt] Model output: {search_model_out}")
 
 
     # ------------------------------------------------------------------
@@ -73,13 +85,13 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     # Hyperparameter space + scoring metrics
     # ------------------------------------------------------------------
     param_distributions = {
-        "n_estimators":     [200, 400, 600, 800],
-        "max_depth":        [3, 4, 5, 6],
-        "learning_rate":    [0.01, 0.05, 0.1, 0.2],
-        "subsample":        [0.6, 0.8, 1.0],
-        "colsample_bytree": [0.6, 0.8, 1.0],
-        "min_child_weight": [1, 3, 5, 7],
-        "gamma":            [0.0, 0.1, 0.3, 0.5],
+        "n_estimators":     [200, 400, 600, 800, 1000],
+        "max_depth":        [3, 4, 5, 6, 7],
+        "learning_rate":    [0.0001, 0.01, 0.05, 0.1, 0.2, 0.25],
+        "subsample":        [0.4, 0.6, 0.8, 1.0],
+        "colsample_bytree": [0.4, 0.6, 0.8, 1.0],
+        "min_child_weight": [1, 3, 5, 7, 10],
+        "gamma":            [0.0, 0.1, 0.3, 0.5, 0.7],
     }
 
     scoring = {
@@ -127,8 +139,8 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     # Save tuned "best" model
     # ------------------------------------------------------------------
     best_model = search.best_estimator_
-    best_model.save_model(model_out)
-    print(f"[hyperopt] Tuned model saved to: {model_out}")
+    best_model.save_model(search_model_out)
+    print(f"[hyperopt] Tuned model saved to: {search_model_out}")
 
     # ------------------------------------------------------------------
     # Save per-model CV metrics (from RandomizedSearchCV) for all models
@@ -154,15 +166,15 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     metrics_df = results_df[param_cols + metric_cols].copy()
     metrics_df = metrics_df.rename(columns=rename_map)
 
-    metrics_csv = os.path.join(plot_dir, "hyperopt_cv_metrics.csv")
+    metrics_csv = os.path.join(search_plot_dir, "hyperopt_cv_metrics.csv")
     metrics_df.to_csv(metrics_csv, index=False)
     print(f"[hyperopt] Per-model CV metrics written to: {metrics_csv}")
 
     # ------------------------------------------------------------------
     # AUC vs hyperparameters plots, histogram, etc.
     # ------------------------------------------------------------------
-    plot_hyperopt_results(search.cv_results_, plot_dir, prefix="hyperopt")
-    print(f"[hyperopt] Hyperparameter plots written in: {plot_dir}")
+    plot_hyperopt_results(search.cv_results_, search_plot_dir, prefix=f"hyperopt_{search_type}")
+    print(f"[hyperopt] Hyperparameter plots written in: {search_plot_dir}")
 
     # ------------------------------------------------------------------
     # For *every* model: 5-fold CV confusion matrix + ROC curve
@@ -215,8 +227,8 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
             prec_value=prec_value,
             rec_value=rec_value,
             f1_value=f1_value,
-            plot_dir=plot_dir,
+            plot_dir=search_plot_dir,
             filename_prefix=prefix,
         )
 
-    print(f"[hyperopt] Confusion + ROC figures saved in: {plot_dir}")
+    print(f"[hyperopt] Confusion + ROC figures saved in: {search_plot_dir}")
