@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, cross_val_predict
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold, cross_val_predict
 from sklearn.metrics import (
     roc_auc_score,
     accuracy_score,
@@ -23,9 +23,9 @@ from .features import (
 )
 from .plotting import plot_hyperopt_results, plot_confusion_matrix_and_roc
 
-def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_path: str | None = None):
+def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_path: str | None = None, search_type: str = "random"):
     """
-    Run RandomizedSearchCV hyperparameter optimisation on the given files.
+    Run GridSearchCV or RandomizedSearchCV hyperparameter optimisation on the given files.
 
     - Uses 5-fold CV.
     - Tracks mean Accuracy, Precision, Recall, F1, and AUC for each model.
@@ -90,18 +90,32 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
         "f1": "f1",
     }
 
-    search = RandomizedSearchCV(
-        estimator=base_model,
-        param_distributions=param_distributions,
-        n_iter=n_iter,
-        scoring=scoring,
-        refit="roc_auc",          # best model chosen by mean AUC
-        cv=5,
-        verbose=1,
-        random_state=42,
-        n_jobs=-1,
-        return_train_score=False,
-    )
+    if search_type == "grid":
+        print(f"[hyperopt] Running GridSearchCV (all {np.prod([len(v) for v in param_distributions.values()])} combinations)")
+        search = GridSearchCV(
+            estimator=base_model,
+            param_grid=param_distributions,
+            scoring=scoring,
+            refit="roc_auc",
+            cv=5,
+            verbose=1,
+            n_jobs=-1,
+            return_train_score=False,
+        )
+    else:
+        print(f"[hyperopt] Running RandomizedSearchCV ({n_iter} iterations)")
+        search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_distributions,
+            n_iter=n_iter,
+            scoring=scoring,
+            refit="roc_auc",
+            cv=5,
+            verbose=1,
+            random_state=42,
+            n_jobs=-1,
+            return_train_score=False,
+        )
 
     search.fit(X, y)
 

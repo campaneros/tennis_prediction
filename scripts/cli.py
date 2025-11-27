@@ -44,6 +44,8 @@ def main():
                        help="Directory to store hyperopt plots")
     hyp_p.add_argument("--model-out", required=True,
                        help="Path to save tuned model JSON")
+    hyp_p.add_argument("--search-type", choices=["grid", "random"], default="random",
+                       help="Search strategy: 'grid' for exhaustive, 'random' for sampling (default: random)")
     hyp_p.add_argument("--config", default=None,
                        help="Path to JSON config file (default: config.json)")
     args = parser.parse_args()
@@ -55,7 +57,7 @@ def main():
         run_prediction(args.files, args.model, args.match_id, args.plot_dir, config_path=args.config)
 
     elif args.command == "hyperopt":
-        run_hyperopt(args.files, args.n_iter, args.plot_dir, args.model_out, config_path=args.config)
+        run_hyperopt(args.files, args.n_iter, args.plot_dir, args.model_out, config_path=args.config, search_type=args.search_type)
 
     else:
         parser.print_help()
