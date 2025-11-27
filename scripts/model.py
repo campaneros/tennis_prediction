@@ -10,6 +10,7 @@ from .features import (
     add_match_labels,
     add_rolling_serve_return_features,
     add_leverage_and_momentum,
+    add_additional_features,
     build_dataset,
 )
 from .config import load_config
@@ -49,6 +50,7 @@ def train_model(file_paths, model_out: str, config_path: str | None = None):
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_leverage_and_momentum(df, alpha=alpha)
+    df = add_additional_features(df)
 
     X, y, _ = build_dataset(df)
     print("[train] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))

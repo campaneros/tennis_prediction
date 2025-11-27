@@ -7,6 +7,7 @@ from .features import (
     add_match_labels,
     add_rolling_serve_return_features,
     add_leverage_and_momentum,
+    add_additional_features,
     build_dataset,
 )
 from .model import load_model
@@ -109,6 +110,7 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_leverage_and_momentum(df, alpha=alpha)
+    df = add_additional_features(df)
 
 
     X, y, mask = build_dataset(df)
