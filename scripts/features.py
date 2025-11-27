@@ -70,21 +70,39 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
+    # Helper function to convert tennis score strings to numeric values
+    def score_to_numeric(score):
+        """Convert tennis score (0, 15, 30, 40, AD) to numeric value."""
+        if pd.isna(score):
+            return 0
+        score_str = str(score).strip().upper()
+        score_map = {
+            '0': 0,
+            '15': 1,
+            '30': 2,
+            '40': 3,
+            'AD': 4,
+            'A': 4,  # Sometimes advantage is abbreviated as 'A'
+        }
+        return score_map.get(score_str, 0)
+
     # Momentum difference (if columns exist)
     if 'P1Momentum' in df.columns and 'P2Momentum' in df.columns:
-        df['Momentum_Diff'] = df['P1Momentum'] - df['P2Momentum']
+        df['Momentum_Diff'] = pd.to_numeric(df['P1Momentum'], errors='coerce').fillna(0) - pd.to_numeric(df['P2Momentum'], errors='coerce').fillna(0)
     else:
         df['Momentum_Diff'] = 0.0
 
-    # Score difference
+    # Score difference (convert tennis scores to numeric first)
     if 'P1Score' in df.columns and 'P2Score' in df.columns:
-        df['Score_Diff'] = df['P1Score'] - df['P2Score']
+        p1_score_numeric = df['P1Score'].apply(score_to_numeric)
+        p2_score_numeric = df['P2Score'].apply(score_to_numeric)
+        df['Score_Diff'] = p1_score_numeric - p2_score_numeric
     else:
         df['Score_Diff'] = 0.0
 
     # Game won difference
     if 'P1GamesWon' in df.columns and 'P2GamesWon' in df.columns:
-        df['Game_Diff'] = df['P1GamesWon'] - df['P2GamesWon']
+        df['Game_Diff'] = pd.to_numeric(df['P1GamesWon'], errors='coerce').fillna(0) - pd.to_numeric(df['P2GamesWon'], errors='coerce').fillna(0)
     else:
         df['Game_Diff'] = 0.0
 
