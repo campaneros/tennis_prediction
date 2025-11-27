@@ -14,49 +14,99 @@ from .model import load_model
 from .plotting import plot_match_probabilities
 
 
-def advance_game_state_simple(row_features, server_wins_point: bool, eff_window: float = WINDOW + 2.0):
+def advance_game_state_simple(row_features, server_wins_point: bool, eff_window: float = 20.0):
     """
-    Simple Bayesian-style update of (P_srv_win, P_srv_lose) if the server
-    wins or loses the current point.
+    Update features to simulate counterfactual scenario where server loses/wins the point.
 
-    row_features = [P_srv_win, P_srv_lose, PointServer, momentum]
+    Current feature order (14 features):
+    [0] P_srv_win_long
+    [1] P_srv_lose_long
+    [2] P_srv_win_short
+    [3] P_srv_lose_short
+    [4] PointServer
+    [5] momentum
+    [6] Momentum_Diff
+    [7] Score_Diff
+    [8] Game_Diff
+    [9] SrvScr
+    [10] RcvScr
+    [11] SetNo
+    [12] GameNo
+    [13] PointNumber
 
-    For the counterfactual, we update only P_srv_win/P_srv_lose and leave
-    PointServer and momentum unchanged as an approximation.
+    For the counterfactual, we update:
+    - P_srv_win/lose (long and short) using Bayesian update
+    - SrvScr/RcvScr based on outcome
+    - Leave others unchanged as approximation
     """
     x = row_features.copy()
-    P_win = float(x[0])
-    P_lose = float(x[1])
-
-    if P_win < 0.0:
-        P_win = 0.0
-    if P_lose < 0.0:
-        P_lose = 0.0
-    S = P_win + P_lose
-    if S <= 0.0:
-        P_win = 0.5
-        P_lose = 0.5
-        S = 1.0
-
-    P_win /= S
-    P_lose /= S
-
-    alpha = P_win * eff_window
-    beta = P_lose * eff_window
-
+    
+    # Extract long window probabilities
+    P_win_long = float(x[0])
+    P_lose_long = float(x[1])
+    P_win_short = float(x[2])
+    P_lose_short = float(x[3])
+    server = int(x[4])
+    
+    # Normalize probabilities
+    def normalize_probs(p_win, p_lose):
+        if p_win < 0.0:
+            p_win = 0.0
+        if p_lose < 0.0:
+            p_lose = 0.0
+        S = p_win + p_lose
+        if S <= 0.0:
+            return 0.5, 0.5
+        return p_win / S, p_lose / S
+    
+    P_win_long, P_lose_long = normalize_probs(P_win_long, P_lose_long)
+    P_win_short, P_lose_short = normalize_probs(P_win_short, P_lose_short)
+    
+    # Bayesian update for long window
+    alpha_long = P_win_long * eff_window
+    beta_long = P_lose_long * eff_window
+    
     if server_wins_point:
-        alpha_new = alpha + 1.0
-        beta_new = beta
+        alpha_long_new = alpha_long + 1.0
+        beta_long_new = beta_long
     else:
-        alpha_new = alpha
-        beta_new = beta + 1.0
-
-    total_new = alpha_new + beta_new
-    P_win_new = alpha_new / total_new
-    P_lose_new = beta_new / total_new
-
-    x[0] = P_win_new
-    x[1] = P_lose_new
+        alpha_long_new = alpha_long
+        beta_long_new = beta_long + 1.0
+    
+    total_long = alpha_long_new + beta_long_new
+    x[0] = alpha_long_new / total_long
+    x[1] = beta_long_new / total_long
+    
+    # Bayesian update for short window (more sensitive)
+    short_window = 5.0
+    alpha_short = P_win_short * short_window
+    beta_short = P_lose_short * short_window
+    
+    if server_wins_point:
+        alpha_short_new = alpha_short + 1.0
+        beta_short_new = beta_short
+    else:
+        alpha_short_new = alpha_short
+        beta_short_new = beta_short + 1.0
+    
+    total_short = alpha_short_new + beta_short_new
+    x[2] = alpha_short_new / total_short
+    x[3] = beta_short_new / total_short
+    
+    # Update SrvScr/RcvScr based on who served and won
+    if server_wins_point:
+        # If server=1, increment SrvScr; if server=2, RcvScr changes for P1
+        if server == 1:
+            x[9] += 1  # SrvScr
+        else:
+            x[10] += 0  # RcvScr stays same (server 2 won)
+    else:
+        # Server lost
+        if server == 1:
+            x[9] += 0  # SrvScr stays same
+        else:
+            x[10] += 1  # RcvScr (P1 received and won)
+    
     return x
 
 
