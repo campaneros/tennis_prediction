@@ -291,7 +291,12 @@ def build_dataset(df: pd.DataFrame):
         "PointNumber",
     ]
 
-    X_all = df[feature_cols].values
+    # Ensure all feature columns are numeric
+    for col in feature_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    X_all = df[feature_cols].values.astype(float)
     y_all = df["p1_wins_match"].values
 
     mask = ~np.isnan(X_all).any(axis=1)
