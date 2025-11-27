@@ -1,7 +1,12 @@
 import numpy as np
 import pandas as pd
 
-from scripts.features import add_match_labels, add_rolling_serve_return_features, build_dataset
+from scripts.features import (
+    add_match_labels,
+    add_rolling_serve_return_features,
+    add_leverage_and_momentum,
+    build_dataset,
+)
 from scripts.model import _default_model
 
 
@@ -43,11 +48,12 @@ def make_tiny_df():
 def test_feature_pipeline_and_model():
     df = make_tiny_df()
     df = add_match_labels(df)
-    df = add_rolling_serve_return_features(df, window=5)
+    df = add_rolling_serve_return_features(df, long_window=20, short_window=5)
+    df = add_leverage_and_momentum(df, alpha=0.3)
 
     X, y, mask = build_dataset(df)
     assert X.shape[0] == y.shape[0]
-    assert X.shape[1] == 3  # P_srv_win, P_srv_lose, PointServer
+    assert X.shape[1] == 6  # P_srv_win_long, P_srv_lose_long, P_srv_win_short, P_srv_lose_short, PointServer, momentum
 
     model = _default_model()
     # Just check that fit() runs without crashing on tiny data
