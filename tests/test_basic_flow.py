@@ -5,6 +5,7 @@ from scripts.features import (
     add_match_labels,
     add_rolling_serve_return_features,
     add_leverage_and_momentum,
+    add_additional_features,
     build_dataset,
 )
 from scripts.model import _default_model
@@ -50,10 +51,11 @@ def test_feature_pipeline_and_model():
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=20, short_window=5)
     df = add_leverage_and_momentum(df, alpha=0.3)
+    df = add_additional_features(df)
 
     X, y, mask = build_dataset(df)
     assert X.shape[0] == y.shape[0]
-    assert X.shape[1] == 6  # P_srv_win_long, P_srv_lose_long, P_srv_win_short, P_srv_lose_short, PointServer, momentum
+    assert X.shape[1] == 14  # All features including new ones
 
     model = _default_model()
     # Just check that fit() runs without crashing on tiny data

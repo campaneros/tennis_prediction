@@ -59,6 +59,55 @@ def add_match_labels(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add additional features:
+      - Momentum_Diff: P1Momentum - P2Momentum (if available in data)
+      - Score_Diff: P1Score - P2Score (if available)
+      - Game_Diff: P1GamesWon - P2GamesWon (if available)
+      - SrvScr: cumulative points won when p1 served in current game
+      - RcvScr: cumulative points won when p1 received in current game
+    """
+    df = df.copy()
+
+    # Momentum difference (if columns exist)
+    if 'P1Momentum' in df.columns and 'P2Momentum' in df.columns:
+        df['Momentum_Diff'] = df['P1Momentum'] - df['P2Momentum']
+    else:
+        df['Momentum_Diff'] = 0.0
+
+    # Score difference
+    if 'P1Score' in df.columns and 'P2Score' in df.columns:
+        df['Score_Diff'] = df['P1Score'] - df['P2Score']
+    else:
+        df['Score_Diff'] = 0.0
+
+    # Game won difference
+    if 'P1GamesWon' in df.columns and 'P2GamesWon' in df.columns:
+        df['Game_Diff'] = df['P1GamesWon'] - df['P2GamesWon']
+    else:
+        df['Game_Diff'] = 0.0
+
+    # Served Score and Received Score (cumulative within each game)
+    df['p1_srv_win_game'] = (
+        (df[SERVER_COL] == 1) & (df[POINT_WINNER_COL] == 1)
+    ).astype(int)
+    df['p1_rcv_win_game'] = (
+        (df[SERVER_COL] != 1) & (df[POINT_WINNER_COL] == 1)
+    ).astype(int)
+
+    df['SrvScr'] = (
+        df.groupby([MATCH_COL, 'GameNo'])['p1_srv_win_game']
+          .cumsum()
+    )
+    df['RcvScr'] = (
+        df.groupby([MATCH_COL, 'GameNo'])['p1_rcv_win_game']
+          .cumsum()
+    )
+
+    return df
+
+
 def add_rolling_serve_return_features(
     df: pd.DataFrame,
     long_window: int,
@@ -192,8 +241,16 @@ def build_dataset(df: pd.DataFrame):
       - P_srv_lose_long
       - P_srv_win_short   (real-time window)
       - P_srv_lose_short  (real-time window)
-      - PointServer
+      - PointServer (Srv)
       - momentum (EWMA of leverage)
+      - Momentum_Diff: P1Momentum - P2Momentum
+      - Score_Diff: P1Score - P2Score
+      - Game_Diff: P1GamesWon - P2GamesWon
+      - SrvScr: cumulative points won when p1 served in game
+      - RcvScr: cumulative points won when p1 received in game
+      - SetNo (St)
+      - GameNo (Gm)
+      - PointNumber (Pt)
 
     Target:
       - p1_wins_match
@@ -206,6 +263,14 @@ def build_dataset(df: pd.DataFrame):
         "P_srv_lose_short",
         SERVER_COL,
         "momentum",
+        "Momentum_Diff",
+        "Score_Diff",
+        "Game_Diff",
+        "SrvScr",
+        "RcvScr",
+        "SetNo",
+        "GameNo",
+        "PointNumber",
     ]
 
     X_all = df[feature_cols].values
