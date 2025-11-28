@@ -122,7 +122,8 @@ def test_feature_pipeline_comprehensive():
     print(f"✓ Additional features: Momentum_Diff, Score_Diff, Game_Diff, SrvScr, RcvScr")
     
     # Test 5: Build dataset
-    X, y, mask = build_dataset(df)
+    X, y, mask, sample_weights = build_dataset(df)
+    assert len(sample_weights) == len(y), "Sample weights should match y length"
     assert X.shape[0] == y.shape[0], "X and y should have same number of rows"
     assert X.shape[1] == 14, f"Expected 14 features, got {X.shape[1]}"
     assert X.shape[0] > 0, "Should have at least some valid samples"
@@ -163,7 +164,7 @@ def test_edge_cases():
     df_copy = add_rolling_serve_return_features(df_copy, long_window=2, short_window=1)
     df_copy = add_leverage_and_momentum(df_copy, alpha=0.5)
     df_copy = add_additional_features(df_copy)
-    X, y, _ = build_dataset(df_copy)
+    X, y, _, sample_weights = build_dataset(df_copy)
     assert X.shape[0] > 0, "Should work with small windows"
     print(f"✓ Edge case: small windows (2, 1) - {X.shape[0]} samples")
     
@@ -174,8 +175,9 @@ def test_edge_cases():
         df_copy = add_rolling_serve_return_features(df_copy, long_window=10, short_window=3)
         df_copy = add_leverage_and_momentum(df_copy, alpha=alpha_val)
         df_copy = add_additional_features(df_copy)
-        X, y, _ = build_dataset(df_copy)
+        X, y, _, sample_weights = build_dataset(df_copy)
         assert not np.isnan(X).any(), f"Should not have NaN with alpha={alpha_val}"
+        assert len(sample_weights) == len(y), "Sample weights should match y"
     print(f"✓ Edge case: tested alpha values [0.1, 0.3, 0.5, 0.9]")
     
     print("\n✅ Edge case tests passed!")

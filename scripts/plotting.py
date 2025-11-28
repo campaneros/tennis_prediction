@@ -23,7 +23,7 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
 
     x = np.arange(len(dfm))
 
-    plt.figure(figsize=(11, 6))
+    plt.figure(figsize=(14, 7))
 
     plt.plot(x, dfm["prob_p1"], label="P1 wins match (current)", linewidth=2)
     plt.plot(x, dfm["prob_p2"], label="P2 wins match (current)", linewidth=2)
@@ -37,12 +37,65 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
         "--", label="P2 wins | server loses point", linewidth=1.5,
     )
 
+    # Add vertical lines and annotations for critical points
+    if 'point_importance' in dfm.columns:
+        # Mark all break points (importance > 2.0, which includes break point situations)
+        break_points = dfm[dfm['point_importance'] > 2.0]
+        
+        # Collect labels for legend
+        added_labels = set()
+        
+        for idx, row in break_points.iterrows():
+            point_idx = idx
+            importance = row['point_importance']
+            
+            # Determine point type based on importance level
+            if importance >= 6.5:
+                label = "Decisive Point"
+                color = 'darkred'
+                alpha = 0.6
+                linestyle = '-'
+                linewidth = 2.5
+            elif importance >= 6.0:
+                label = "Set/Break Point"
+                color = 'darkorange'
+                alpha = 0.5
+                linestyle = '--'
+                linewidth = 2.0
+            elif importance >= 5.0:
+                label = "Critical Point"
+                color = 'purple'
+                alpha = 0.4
+                linestyle = ':'
+                linewidth = 2.0
+            elif importance >= 3.5:
+                label = "Important Point"
+                color = 'brown'
+                alpha = 0.3
+                linestyle = '-.'
+                linewidth = 1.5
+            else:  # > 2.0
+                label = "Break Point"
+                color = 'gray'
+                alpha = 0.2
+                linestyle = ':'
+                linewidth = 1.0
+            
+            # Draw vertical line with label only once per category
+            if label not in added_labels:
+                plt.axvline(x=point_idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=linewidth, label=label)
+                added_labels.add(label)
+            else:
+                plt.axvline(x=point_idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=linewidth)
+
     plt.xlabel("Point index in match")
     plt.ylabel("Match win probability")
     plt.ylim(0.0, 1.0)
     plt.title(f"Match win probabilities and counterfactual (server loses)\nmatch_id={match_id_to_plot}")
     plt.grid(True, alpha=0.3)
-    plt.legend()
+    plt.legend(loc='upper left')
     plt.tight_layout()
 
     fname = os.path.join(plot_dir, f"match_{match_id_to_plot}_probabilities.png")
@@ -50,6 +103,143 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
     plt.close()
 
     print(f"[plot] Saved match probability plot to: {fname}")
+
+
+def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot: str, plot_dir: str):
+    """
+    Generate 2 separate plots comparing the two counterfactual methods:
+    1. Importance-based counterfactual (fast, all points)
+    2. Hybrid simulation (critical points >3.5 get score simulation)
+    """
+    os.makedirs(plot_dir, exist_ok=True)
+
+    dfm = df_valid[df_valid[MATCH_COL] == match_id_to_plot].reset_index(drop=True)
+
+    if dfm.empty:
+        print(f"[plot] No rows for match_id={match_id_to_plot}")
+        return
+
+    x = np.arange(len(dfm))
+    
+    # === PLOT 1: Importance-based counterfactual ===
+    plt.figure(figsize=(14, 7))
+
+    plt.plot(x, dfm["prob_p1_imp"], label="P1 wins match (current)", linewidth=2, color='blue')
+    plt.plot(x, dfm["prob_p2_imp"], label="P2 wins match (current)", linewidth=2, color='orange')
+
+    plt.plot(
+        x, dfm["prob_p1_lose_imp"],
+        "--", label="P1 wins | server loses point", linewidth=1.5, color='green'
+    )
+    plt.plot(
+        x, dfm["prob_p2_lose_imp"],
+        "--", label="P2 wins | server loses point", linewidth=1.5, color='red'
+    )
+
+    # Add vertical lines for critical points
+    if 'point_importance' in dfm.columns:
+        critical_points = dfm[dfm['point_importance'] > 5.0]
+        added_labels = set()
+        
+        for idx, row in critical_points.iterrows():
+            importance = row['point_importance']
+            
+            if importance >= 6.5:
+                label = "Decisive Point"
+                color = 'darkred'
+                alpha = 0.5
+                linestyle = '-'
+            elif importance >= 6.0:
+                label = "Set/Break Point"
+                color = 'darkorange'
+                alpha = 0.4
+                linestyle = '--'
+            else:
+                label = "Critical Point"
+                color = 'purple'
+                alpha = 0.3
+                linestyle = ':'
+            
+            if label not in added_labels:
+                plt.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=2, label=label)
+                added_labels.add(label)
+            else:
+                plt.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=2)
+
+    plt.xlabel("Point index in match")
+    plt.ylabel("Match win probability")
+    plt.ylim(0.0, 1.0)
+    plt.title(f"METHOD 1: Importance-based counterfactual\nmatch_id={match_id_to_plot}")
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc='upper left')
+    plt.tight_layout()
+
+    fname1 = os.path.join(plot_dir, f"match_{match_id_to_plot}_importance.png")
+    plt.savefig(fname1, dpi=150)
+    plt.close()
+    print(f"[plot] Saved importance-based plot to: {fname1}")
+
+    # === PLOT 2: Hybrid simulation counterfactual ===
+    plt.figure(figsize=(14, 7))
+
+    plt.plot(x, dfm["prob_p1_sim"], label="P1 wins match (current)", linewidth=2, color='blue')
+    plt.plot(x, dfm["prob_p2_sim"], label="P2 wins match (current)", linewidth=2, color='orange')
+
+    plt.plot(
+        x, dfm["prob_p1_lose_sim"],
+        "--", label="P1 wins | server loses point", linewidth=1.5, color='green'
+    )
+    plt.plot(
+        x, dfm["prob_p2_lose_sim"],
+        "--", label="P2 wins | server loses point", linewidth=1.5, color='red'
+    )
+
+    # Highlight critical points that get score simulation (>3.5)
+    if 'point_importance' in dfm.columns:
+        simulated_points = dfm[dfm['point_importance'] > 3.5]
+        added_labels = set()
+        
+        for idx, row in simulated_points.iterrows():
+            importance = row['point_importance']
+            
+            if importance >= 6.5:
+                label = "Decisive (simulated)"
+                color = 'darkred'
+                alpha = 0.6
+                linestyle = '-'
+            elif importance >= 6.0:
+                label = "Set/Break (simulated)"
+                color = 'darkorange'
+                alpha = 0.5
+                linestyle = '--'
+            else:
+                label = "Critical (simulated)"
+                color = 'purple'
+                alpha = 0.4
+                linestyle = ':'
+            
+            if label not in added_labels:
+                plt.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=2, label=label)
+                added_labels.add(label)
+            else:
+                plt.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=2)
+
+    plt.xlabel("Point index in match")
+    plt.ylabel("Match win probability")
+    plt.ylim(0.0, 1.0)
+    plt.title(f"METHOD 2: Hybrid simulation (score sim for importance >3.5)\nmatch_id={match_id_to_plot}")
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc='upper left')
+    plt.tight_layout()
+
+    fname2 = os.path.join(plot_dir, f"match_{match_id_to_plot}_simulation.png")
+    plt.savefig(fname2, dpi=150)
+    plt.close()
+    print(f"[plot] Saved simulation-based plot to: {fname2}")
 
 
 def plot_hyperopt_results(cv_results, plot_dir: str, prefix: str = "hyperopt"):
@@ -190,3 +380,127 @@ def plot_confusion_matrix_and_roc(
     plt.close()
 
     print(f"[plot] Saved confusion matrix + ROC figure to: {fname}")
+
+
+def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot: str, plot_dir: str, mode: str = "semi-realistic"):
+    """
+    Generate 2 plots comparing different counterfactual methods:
+    1. Importance-based counterfactual (always computed)
+    2. Dataset simulation counterfactual (semi-realistic or realistic)
+    
+    Args:
+        df_valid: DataFrame with predictions
+        match_id_to_plot: Match ID to plot
+        plot_dir: Output directory
+        mode: "semi-realistic" or "realistic"
+    """
+    os.makedirs(plot_dir, exist_ok=True)
+
+    dfm = df_valid[df_valid[MATCH_COL] == match_id_to_plot].reset_index(drop=True)
+
+    if dfm.empty:
+        print(f"[plot] No rows for match_id={match_id_to_plot}")
+        return
+
+    x = np.arange(len(dfm))
+    
+    # Check which columns are available
+    has_importance = 'prob_p1' in dfm.columns and 'prob_p1_lose_srv' in dfm.columns
+    has_alt = 'prob_p1_alt' in dfm.columns and 'prob_p1_lose_alt' in dfm.columns
+    
+    if not has_importance:
+        print(f"[plot] Missing importance-based probabilities")
+        return
+    
+    # PLOT 1: Importance-based counterfactual (ALWAYS generated)
+    fig1, ax1 = plt.subplots(figsize=(14, 7))
+    
+    ax1.plot(x, dfm["prob_p1"], label="P1 wins match (current)", linewidth=2, color='blue')
+    ax1.plot(x, dfm["prob_p2"], label="P2 wins match (current)", linewidth=2, color='orange')
+    ax1.plot(x, dfm["prob_p1_lose_srv"], "--", label="P1 wins | server loses (importance)", 
+             linewidth=1.5, color='green')
+    ax1.plot(x, dfm["prob_p2_lose_srv"], "--", label="P2 wins | server loses (importance)", 
+             linewidth=1.5, color='red')
+    
+    # Add critical points markers
+    if 'point_importance' in dfm.columns:
+        critical_points = dfm[dfm['point_importance'] > 5.0]
+        added_labels = set()
+        
+        for idx, row in critical_points.iterrows():
+            importance = row['point_importance']
+            
+            if importance >= 6.5:
+                label, color, alpha, linestyle = "Decisive", 'darkred', 0.5, '-'
+            elif importance >= 6.0:
+                label, color, alpha, linestyle = "Set/Break", 'darkorange', 0.4, '--'
+            else:
+                label, color, alpha, linestyle = "Critical", 'purple', 0.3, ':'
+            
+            if label not in added_labels:
+                ax1.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
+                           linewidth=2, label=label)
+                added_labels.add(label)
+            else:
+                ax1.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, linewidth=2)
+    
+    ax1.set_xlabel("Point index in match")
+    ax1.set_ylabel("Match win probability")
+    ax1.set_ylim(0.0, 1.0)
+    ax1.set_title(f"Counterfactual: Point Importance Scaling\nmatch_id={match_id_to_plot}")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper left', fontsize=9)
+    fig1.tight_layout()
+    
+    fname1 = os.path.join(plot_dir, f"match_{match_id_to_plot}_importance.png")
+    fig1.savefig(fname1, dpi=150)
+    plt.close(fig1)
+    print(f"[plot] Saved importance-based plot to: {fname1}")
+    
+    # PLOT 2: Simulation-based counterfactual (if available)
+    if has_alt:
+        fig2, ax2 = plt.subplots(figsize=(14, 7))
+        
+        ax2.plot(x, dfm["prob_p1_alt"], label="P1 wins match (current)", linewidth=2, color='blue')
+        ax2.plot(x, dfm["prob_p2_alt"], label="P2 wins match (current)", linewidth=2, color='orange')
+        ax2.plot(x, dfm["prob_p1_lose_alt"], "--", label=f"P1 wins | server loses ({mode})", 
+                 linewidth=1.5, color='green')
+        ax2.plot(x, dfm["prob_p2_lose_alt"], "--", label=f"P2 wins | server loses ({mode})", 
+                 linewidth=1.5, color='red')
+        
+        # Add critical points markers
+        if 'point_importance' in dfm.columns:
+            critical_points = dfm[dfm['point_importance'] > 5.0]
+            added_labels = set()
+            
+            for idx, row in critical_points.iterrows():
+                importance = row['point_importance']
+                
+                if importance >= 6.5:
+                    label, color, alpha, linestyle = "Decisive", 'darkred', 0.5, '-'
+                elif importance >= 6.0:
+                    label, color, alpha, linestyle = "Set/Break", 'darkorange', 0.4, '--'
+                else:
+                    label, color, alpha, linestyle = "Critical", 'purple', 0.3, ':'
+                
+                if label not in added_labels:
+                    ax2.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
+                               linewidth=2, label=label)
+                    added_labels.add(label)
+                else:
+                    ax2.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, linewidth=2)
+        
+        ax2.set_xlabel("Point index in match")
+        ax2.set_ylabel("Match win probability")
+        ax2.set_ylim(0.0, 1.0)
+        ax2.set_title(f"Counterfactual: Dataset Simulation ({mode.title()})\nmatch_id={match_id_to_plot}")
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(loc='upper left', fontsize=9)
+        fig2.tight_layout()
+        
+        fname2 = os.path.join(plot_dir, f"match_{match_id_to_plot}_{mode}.png")
+        fig2.savefig(fname2, dpi=150)
+        plt.close(fig2)
+        print(f"[plot] Saved {mode} plot to: {fname2}")
+    else:
+        print(f"[plot] No alternative counterfactual data available for {mode} plot")
