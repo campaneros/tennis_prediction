@@ -67,10 +67,11 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     df = load_points_multiple(file_paths)
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
-    df = add_leverage_and_momentum(df, alpha=alpha)
     df = add_additional_features(df)
-    X, y, _ = build_dataset(df)
+    df = add_leverage_and_momentum(df, alpha=alpha)
+    X, y, _, sample_weights = build_dataset(df)
     print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
+    print(f"[hyperopt] sample weights - mean: {sample_weights.mean():.2f}, max: {sample_weights.max():.2f}")
 
 
     base_model = XGBClassifier(
@@ -129,7 +130,7 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
             return_train_score=False,
         )
 
-    search.fit(X, y)
+    search.fit(X, y, sample_weight=sample_weights)
 
     print("[hyperopt] Best parameters:")
     print(search.best_params_)
@@ -141,6 +142,12 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     best_model = search.best_estimator_
     best_model.save_model(search_model_out)
     print(f"[hyperopt] Tuned model saved to: {search_model_out}")
+
+    # ------------------------------------------------------------------
+    # Create models directory for saving all models
+    # ------------------------------------------------------------------
+    models_dir = os.path.join(model_dir, search_type)
+    os.makedirs(models_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Save per-model CV metrics (from RandomizedSearchCV) for all models
@@ -196,7 +203,7 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
 
         # Cross-validated probabilities for "P1 wins" (class 1 in y)
         y_proba_p1 = cross_val_predict(
-            model_i, X, y, cv=cv, method="predict_proba"
+            model_i, X, y, cv=cv, method="predict_proba", fit_params={"sample_weight": sample_weights}
         )[:, 1]
 
         # Flip to P2 probability + predictions for (0=P1,1=P2) convention
@@ -217,6 +224,11 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
             f"AUC={auc_value:.3f}, Acc={acc_value:.3f}, "
             f"Prec={prec_value:.3f}, Rec={rec_value:.3f}, F1={f1_value:.3f}"
         )
+        
+        # Save each model to models/{search_type}/model_{idx}.json
+        model_path = os.path.join(models_dir, f"model_{idx:03d}.json")
+        model_i.fit(X, y, sample_weight=sample_weights)
+        model_i.save_model(model_path)
 
         plot_confusion_matrix_and_roc(
             cm=cm,
@@ -231,4 +243,5 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
             filename_prefix=prefix,
         )
 
+    print(f"[hyperopt] All models saved in: {models_dir}")
     print(f"[hyperopt] Confusion + ROC figures saved in: {search_plot_dir}")

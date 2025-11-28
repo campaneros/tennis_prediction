@@ -4,6 +4,9 @@ import argparse
 from .model import train_model
 from .prediction import run_prediction
 from .hyperopt import run_hyperopt
+from .plotting import plot_match_probabilities
+import pandas as pd
+import os
 
 
 def main():
@@ -33,6 +36,16 @@ def main():
                         help="Directory to store plots")
     pred_p.add_argument("--config", default=None,
                         help="Path to JSON config file (default: config.json)")
+    pred_p.add_argument("--mode", choices=["importance", "semi-realistic", "realistic"], 
+                        default="importance",
+                        help="Counterfactual mode: 'importance' (fast, default), 'semi-realistic' (critical points only), 'realistic' (all points, slow)")
+
+    # REPLOT
+    replot_p = subparsers.add_parser("replot", help="Regenerate plot from saved probabilities CSV")
+    replot_p.add_argument("--csv", required=True,
+                          help="Path to saved probabilities CSV file")
+    replot_p.add_argument("--plot-dir", default="plots",
+                          help="Directory to store plots")
 
     # HYPEROPT
     hyp_p = subparsers.add_parser("hyperopt", help="Hyperparameter optimisation")
@@ -54,7 +67,22 @@ def main():
         train_model(args.files, args.model_out, config_path=args.config)
 
     elif args.command == "predict":
-        run_prediction(args.files, args.model, args.match_id, args.plot_dir, config_path=args.config)
+        mode = getattr(args, 'mode', 'importance')
+        run_prediction(args.files, args.model, args.match_id, args.plot_dir, 
+                      config_path=args.config, counterfactual_mode=mode)
+
+    elif args.command == "replot":
+        # Regenerate plot from saved CSV
+        if not os.path.exists(args.csv):
+            print(f"Error: CSV file not found: {args.csv}")
+            return
+        
+        df = pd.read_csv(args.csv)
+        match_id = df['match_id'].iloc[0]
+        os.makedirs(args.plot_dir, exist_ok=True)
+        
+        plot_match_probabilities(df, str(match_id), args.plot_dir)
+        print(f"[replot] Regenerated plot from {args.csv}")
 
     elif args.command == "hyperopt":
         run_hyperopt(args.files, args.n_iter, args.plot_dir, args.model_out, config_path=args.config, search_type=args.search_type)

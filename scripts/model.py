@@ -49,19 +49,20 @@ def train_model(file_paths, model_out: str, config_path: str | None = None):
     df = load_points_multiple(file_paths)
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
-    df = add_leverage_and_momentum(df, alpha=alpha)
     df = add_additional_features(df)
+    df = add_leverage_and_momentum(df, alpha=alpha)
 
-    X, y, _ = build_dataset(df)
+    X, y, _, sample_weights = build_dataset(df)
     print("[train] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
     print(f"[train] long_window={long_window}, short_window={short_window}, alpha={alpha}")
+    print(f"[train] sample weights - mean: {sample_weights.mean():.2f}, max: {sample_weights.max():.2f}")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+    X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
+        X, y, sample_weights, test_size=0.2, random_state=42, stratify=y
     )
 
     model = _default_model()
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=w_train)
 
     y_proba = model.predict_proba(X_test)[:, 1]
     y_pred = (y_proba >= 0.5).astype(int)
