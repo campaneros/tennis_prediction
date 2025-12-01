@@ -8,27 +8,59 @@ Below are **all the commands you need to run the code**.
 
 ## Model Features
 
-The model uses **18 features** to predict match outcomes:
+The model uses **22 features** to predict match outcomes:
 
-### Feature Importance Ranking
-1. **SetsWonDiff (21.8%)** - Set difference scaled by match progress (weight: 0.25)
-2. **SetNo (17.1%)** - Set number normalized (1-5)
-3. **Game_Diff (11.1%)** - Game difference in current set
-4. **is_decider_tied (9.0%)** - Binary flag for tied decisive set (set 4+, sets 2-2)
-5. **GameNo (4.8%)** - Game number within set
-6. **PointNumber (4.8%)** - Point number within match
-7. **CurrentSetGamesDiff (4.5%)** - In-set game difference amplified (×2.5)
-8. **Momentum_Diff (3.7%)** - Momentum difference normalized per set (z-score)
-9. **Score_Diff (3.2%)** - Point score difference in current game
-10. **momentum (3.0%)** - Exponential weighted moving average (alpha=0.15)
-11. **SrvScr (2.9%)** - Cumulative points won when P1 served in game
-12. **RcvScr (2.9%)** - Cumulative points won when P1 received in game
-13. **Server (2.7%)** - Binary: 1 if P1 serves, 0 if P2 serves
-14. **point_importance (2.1%)** - Critical point indicator (1.0-7.0)
-15. **P_srv_win_long (2.0%)** - P1 serve win rate (20-point window)
-16. **P_srv_lose_long (1.9%)** - P1 return game win rate (20-point window)
-17. **P_srv_lose_short (1.3%)** - P1 return win rate (5-point window)
-18. **P_srv_win_short (1.2%)** - P1 serve win rate (5-point window)
+### Feature List & Descriptions
+
+1. **P_srv_win_long** - P1 serve win probability (20-point rolling window, Bayesian smoothing)
+2. **P_srv_lose_long** - P1 return game win probability (20-point rolling window)
+3. **P_srv_win_short** - P1 serve win probability (5-point real-time window)
+4. **P_srv_lose_short** - P1 return win probability (5-point real-time window)
+5. **PointServer** - Binary: 1 if P1 serves, 2 if P2 serves
+6. **momentum** - Exponential weighted moving average of leverage (alpha=0.35, weighted by point importance)
+7. **Momentum_Diff** - P1 momentum minus P2 momentum (rolling z-score, window=50)
+8. **Score_Diff** - Point score difference in current game (P1 - P2)
+9. **Game_Diff** - Game difference in current set (P1 - P2)
+10. **CurrentSetGamesDiff** - In-set game difference amplified ×1.5 for current set performance
+11. **SrvScr** - Cumulative points won when P1 served in current game
+12. **RcvScr** - Cumulative points won when P1 received in current game
+13. **SetNo** - Current set number (1-5)
+14. **GameNo** - Game number within current set
+15. **PointNumber** - Point number within entire match
+16. **point_importance** - Critical point indicator (1.0=normal, 7.0=match point)
+17. **SetsWonDiff** - Set difference scaled by match progress with non-linear weighting
+18. **SetsWonAdvantage** - Binary set advantage: +4.0 if P1 leads, -4.0 if P1 behind, 0.0 if tied
+19. **SetWinProbPrior** - Calibrated prior for P1 match win based on set state (0.05-0.95)
+20. **SetWinProbEdge** - Centered prior in [-1,1] to stabilize training
+21. **SetWinProbLogit** - Log-odds of the calibrated prior
+22. **is_decider_tied** - 1.0 when sets are tied in decisive set (2-2 in set 5), 0.0 otherwise
+
+### Key Feature Engineering Strategies
+
+#### Set Advantage Dominance (SetsWonAdvantage)
+- **Weight**: ±4.0 (strongest signal when sets differ)
+- **Purpose**: Force probabilities toward 0.5 when sets are tied, override historical bias
+- When sets tied: probabilities reflect current game situation, not cumulative stats
+
+#### Adaptive Dampening When Sets Tied
+When `SetsWonDiff_raw == 0`:
+- **Serve/return stats dampening**: 50% pull toward 0.5 for normal points, 20% for critical points (importance > 3.0)
+- **Leverage reduction**: 35% for normal points, 70% for critical points
+- **Momentum suppression**: 2% in tied decisive set to remove historical bias
+
+This ensures:
+- Tied sets + normal points → probabilities ≈ 0.5
+- Tied sets + critical situations (40-0, break point) → current game dominance matters
+
+#### Point Importance Weighting
+Break points, set points, and match points get amplified impact:
+```python
+importance = 1.0  # baseline
+importance += 2.0 if break_point
+importance += 2.0 if set_point  
+importance += 2.0 if match_point
+importance *= 1.5 if deuce/advantage
+```
 
 ### Sample Weighting
 Points are weighted during training based on:
@@ -36,16 +68,16 @@ Points are weighted during training based on:
 weight = point_importance^0.5 × competitive_multiplier × tied_boost
 ```
 - **point_importance**: 1.0 (regular) to 7.0 (match point)
-- **competitive_multiplier**: 5-set match ×4, 4-set ×2.5, 3-set ×1.0
-- **tied_boost**: ×2 when sets are tied in decisive set
+- **competitive_multiplier**: 5-set match ×4.0, 4-set ×2.5, 3-set ×1.0
+- **tied_boost**: ×2.0 when sets are tied in decisive set
 
 ### Training Configuration
 - **long_window**: 20 points
 - **short_window**: 5 points
-- **momentum_alpha**: 0.15 (faster decay, more reactive)
+- **momentum_alpha**: 0.35 (moderate decay, balances history and recent form)
 - **sample_weight_exponent**: 0.5
 
-**Note**: Match 1701 is excluded from training to prevent test set leakage.
+**Note**: Match 1701 is excluded from training to prevent test set leakage. Women's matches (best-of-3) are also excluded to focus on men's Grand Slam format (best-of-5).
 
 ---
 
