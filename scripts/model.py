@@ -1,4 +1,5 @@
 import os
+import numpy as np
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -53,12 +54,17 @@ def train_model(file_paths, model_out: str, config_path: str | None = None):
     df = add_leverage_and_momentum(df, alpha=alpha)
 
     X, y, _, sample_weights = build_dataset(df)
+    train_cfg = cfg.get("training", {})
+    weight_exp = float(train_cfg.get("sample_weight_exponent", 1.0))
+    adjusted_weights = np.power(sample_weights, weight_exp)
+
     print("[train] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
     print(f"[train] long_window={long_window}, short_window={short_window}, alpha={alpha}")
-    print(f"[train] sample weights - mean: {sample_weights.mean():.2f}, max: {sample_weights.max():.2f}")
+    print(f"[train] weight exponent: {weight_exp}")
+    print(f"[train] sample weights - mean: {adjusted_weights.mean():.2f}, max: {adjusted_weights.max():.2f}")
 
     X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
-        X, y, sample_weights, test_size=0.2, random_state=42, stratify=y
+        X, y, adjusted_weights, test_size=0.2, random_state=42, stratify=y
     )
 
     model = _default_model()

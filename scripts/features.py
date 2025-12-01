@@ -287,11 +287,17 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df['Score_Diff'] = 0.0
 
+    # Clip score differential to keep model from overfitting absolute values
+    df['Score_Diff'] = pd.to_numeric(df['Score_Diff'], errors='coerce').fillna(0.0)
+    df['Score_Diff'] = df['Score_Diff'].clip(lower=-2.0, upper=2.0)
+
     # Game won difference
     if 'P1GamesWon' in df.columns and 'P2GamesWon' in df.columns:
         df['Game_Diff'] = pd.to_numeric(df['P1GamesWon'], errors='coerce').fillna(0) - pd.to_numeric(df['P2GamesWon'], errors='coerce').fillna(0)
     else:
         df['Game_Diff'] = 0.0
+
+    df['Game_Diff'] = pd.to_numeric(df['Game_Diff'], errors='coerce').fillna(0.0).clip(lower=-3.0, upper=3.0)
 
     # Served Score and Received Score (cumulative within each game)
     df['p1_srv_win_game'] = (
@@ -312,6 +318,14 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     
     # Calculate point importance for sample weighting
     df['point_importance'] = df.apply(calculate_point_importance, axis=1)
+
+    # Normalize coarse progress indicators within each match to reduce raw-score dominance
+    match_groups = df[MATCH_COL]
+    for col in ['GameNo', 'PointNumber', 'SetNo']:
+        if col in df.columns:
+            numeric = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            max_per_match = numeric.groupby(match_groups).transform('max').replace(0, 1)
+            df[col] = (numeric / max_per_match).clip(0.0, 1.0)
 
     return df
 
@@ -341,6 +355,10 @@ def add_rolling_serve_return_features(
     """
     df = df.copy()
 
+    # Ensure server / winner columns are numeric and drop rows with missing values
+    df[SERVER_COL] = pd.to_numeric(df[SERVER_COL], errors='coerce')
+    df[POINT_WINNER_COL] = pd.to_numeric(df[POINT_WINNER_COL], errors='coerce')
+    df = df.dropna(subset=[SERVER_COL, POINT_WINNER_COL])
     df[SERVER_COL] = df[SERVER_COL].astype(int)
     df[POINT_WINNER_COL] = df[POINT_WINNER_COL].astype(int)
 
