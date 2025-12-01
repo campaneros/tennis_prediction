@@ -155,22 +155,34 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     
     # Scale updates by importance (critical points have larger impact)
     # importance ranges from 1.0 (normal) to 7.0 (critical break/set point)
-    # Use smooth power-law scaling for continuous gradation
-    # Use importance^2.5 for more aggressive scaling - normal points get very small impact
-    # importance^2.5 gives: 1.0->1.0, 2.0->5.7, 3.0->15.6, 5.0->55.9, 7.0->128.8
-    raw_importance_factor = np.power(point_importance, 2.5)
-    # Normalize to range [0.01, 1.5]: 1.0->0.01, 2.0->0.06, 3.0->0.18, 5.0->0.65, 7.0->1.5
-    importance_factor = 0.01 + (raw_importance_factor - 1.0) / (128.8 - 1.0) * 1.49
-    importance_factor = np.clip(importance_factor, 0.01, 1.5)
+    # 
+    # NEW APPROACH: Suppress normal points instead of amplifying critical ones
+    # Use a sigmoid-like function that keeps normal points very low
+    # and only starts growing significantly after importance > 2.5
+    
+    if point_importance <= 2.0:
+        # Very conservative for truly normal points
+        importance_factor = point_importance * 0.02  # 1.0->0.02, 2.0->0.04
+    elif point_importance <= 3.0:
+        # Moderate transition zone
+        # Linear interpolation from 0.04 at 2.0 to 0.25 at 3.0
+        importance_factor = 0.04 + (point_importance - 2.0) * 0.21
+    else:
+        # Above 3.0, use linear scaling
+        # From 0.25 at 3.0 to 1.5 at 7.0
+        importance_factor = 0.25 + (point_importance - 3.0) * 0.3125
+        importance_factor = min(importance_factor, 1.5)
     
     # Bayesian update for long window
     alpha_long = P_win_long * eff_window
     beta_long = P_lose_long * eff_window
     
     # Update strength proportional to importance_factor
-    # For normal points (importance_factor ~ 0.01), we add minimal pseudo-observations
+    # For normal points (importance_factor ~ 0.02), we add very few pseudo-observations
     # For critical points (importance_factor ~ 1.5), we add many
-    update_strength = 0.2 + importance_factor * 2.0  # Range: 0.22 (normal) to 3.2 (critical)
+    # Use importance_factor^2.0 to further suppress normal point changes in probabilities
+    bayesian_factor = np.power(importance_factor, 2.0)
+    update_strength = 0.05 + bayesian_factor * 1.5  # Range: ~0.05 (normal) to 3.4 (critical)
     
     if server_wins_point:
         alpha_long_new = alpha_long + update_strength
@@ -201,10 +213,24 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     
     # Update momentum based on leverage and importance
     # Critical points have much larger momentum impact
-    leverage = max(0.0, x[0] - x[1])
-    # Momentum change scales with importance^1.5 for stronger effect on critical points
-    momentum_factor = np.power(importance_factor, 1.2)
-    momentum_change = 0.3 * leverage * momentum_factor
+    raw_leverage = max(0.0, x[0] - x[1])
+    
+    # Cap leverage for normal points to prevent outlier changes
+    # For normal points (importance <= 1.5), cap leverage at 0.15
+    # For critical points, use full leverage
+    if point_importance <= 1.5:
+        leverage = min(raw_leverage, 0.15)
+    elif point_importance <= 2.5:
+        # Smooth transition: linearly interpolate cap from 0.15 to full leverage
+        max_lev = 0.15 + (point_importance - 1.5) * (raw_leverage - 0.15)
+        leverage = min(raw_leverage, max_lev)
+    else:
+        leverage = raw_leverage
+    
+    # Use importance_factor^2.5 to aggressively suppress momentum changes for normal points
+    # 0.002^2.5 = 0.000003, 0.01^2.5 = 0.000003, 1.5^2.5 = 2.76
+    momentum_factor = np.power(importance_factor, 2.5)
+    momentum_change = 0.15 * leverage * momentum_factor  # Further reduced base from 0.2 to 0.15
     
     if server_wins_point:
         # Winning critical point increases momentum significantly
@@ -217,11 +243,10 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     x[5] = np.clip(x[5], -3.0, 3.0)
     
     # Update Game_Diff and Score_Diff using smooth scaling
-    # importance_factor ranges 0.05 (normal) to 1.5 (critical)
-    # game_change ranges from 0.015 (normal) to 2.25 (critical)
-    # score_change ranges from 0.025 (normal) to 3.75 (critical)
-    game_change = importance_factor * 1.5
-    score_change = importance_factor * 2.5
+    # Use importance_factor^2.0 for game/score to suppress normal point changes
+    # 0.002^2.0 = 0.000004, 1.5^2.0 = 2.25
+    game_change = np.power(importance_factor, 2.0) * 1.0  # Reduced from 1.5 and squared
+    score_change = np.power(importance_factor, 2.0) * 1.5  # Reduced from 2.5 and squared
     
     # Apply game differential change
     if server == 1:
@@ -234,6 +259,7 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
             x[8] = game_diff - game_change
         else:
             x[8] = game_diff + game_change
+    x[8] = np.clip(x[8], -3.0, 3.0)
     
     # Apply score differential change
     if server == 1:
@@ -246,6 +272,7 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
             x[7] = score_diff - score_change
         else:
             x[7] = score_diff + score_change
+    x[7] = np.clip(x[7], -2.0, 2.0)
     
     # Update SrvScr/RcvScr based on who served and won
     if server_wins_point:
@@ -363,13 +390,10 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     simulated_count = 0
     for i, idx in enumerate(df_valid.index):
         if not simulate_mask[i]:
-            # Use fast approximation for non-simulated points
-            x = X_current[i]
-            importance = point_importances[i]
-            x_lose = advance_game_state_simple(x, server_wins_point=False, point_importance=importance)
-            p1_lose = float(model.predict_proba(x_lose.reshape(1, -1))[:, 1])
-            prob_p1_lose_srv[i] = p1_lose
-            prob_p2_lose_srv[i] = 1.0 - p1_lose
+            # Non-critical point: alternative scenario identical to current dataset.
+            # Use the same probabilities so curves overlap exactly.
+            prob_p1_lose_srv[i] = prob_p1[i]
+            prob_p2_lose_srv[i] = prob_p2[i]
             continue
         
         # Create a FRESH copy of raw dataset for THIS point only
@@ -487,12 +511,18 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     match_df = df_valid[df_valid[MATCH_COL] == match_id_str]
     
     # Save probabilities to CSV for later plot regeneration
-    probs_file = os.path.join(plot_dir, f"match_{match_id_str}_probabilities.csv")
+    # Add suffix based on counterfactual mode
+    mode_suffix = "" if counterfactual_mode == "importance" else f"_{counterfactual_mode}"
+    probs_file = os.path.join(plot_dir, f"match_{match_id_str}_probabilities{mode_suffix}.csv")
     if not match_df.empty:
         # Save essential columns for plotting
         cols_to_save = [MATCH_COL, 'prob_p1', 'prob_p2', 'prob_p1_lose_srv', 'prob_p2_lose_srv']
         if 'point_importance' in match_df.columns:
             cols_to_save.append('point_importance')
+        # If we have semi-realistic/realistic alternative probabilities, save them too
+        for col in ["prob_p1_alt", "prob_p2_alt", "prob_p1_lose_alt", "prob_p2_lose_alt"]:
+            if col in match_df.columns:
+                cols_to_save.append(col)
         match_df[cols_to_save].to_csv(probs_file, index=False)
         print(f"[prediction] Saved probabilities to: {probs_file}")
     

@@ -119,13 +119,20 @@ def test_feature_pipeline_comprehensive():
     assert "Game_Diff" in df.columns
     assert "SrvScr" in df.columns
     assert "RcvScr" in df.columns
-    print(f"✓ Additional features: Momentum_Diff, Score_Diff, Game_Diff, SrvScr, RcvScr")
+
+    # New normalization/clipping checks
+    assert df["Score_Diff"].min() >= -2.0 and df["Score_Diff"].max() <= 2.0, "Score_Diff should be clipped to [-2, 2]"
+    assert df["Game_Diff"].min() >= -3.0 and df["Game_Diff"].max() <= 3.0, "Game_Diff should be clipped to [-3, 3]"
+    for col in ["SetNo", "GameNo", "PointNumber"]:
+        assert df[col].between(0.0, 1.0).all(), f"{col} should be normalized between 0 and 1"
+
+    print(f"✓ Additional features: clipping + normalization verified")
     
     # Test 5: Build dataset
     X, y, mask, sample_weights = build_dataset(df)
     assert len(sample_weights) == len(y), "Sample weights should match y length"
     assert X.shape[0] == y.shape[0], "X and y should have same number of rows"
-    assert X.shape[1] == 14, f"Expected 14 features, got {X.shape[1]}"
+    assert X.shape[1] == 15, f"Expected 15 features, got {X.shape[1]}"
     assert X.shape[0] > 0, "Should have at least some valid samples"
     assert y.sum() > 0 and y.sum() < len(y), "Should have both positive and negative classes"
     assert not np.isnan(X).any(), "X should not contain NaN values"
@@ -147,7 +154,7 @@ def test_feature_pipeline_comprehensive():
     
     # Test 8: Feature importance
     feature_importance = model.feature_importances_
-    assert len(feature_importance) == 14, "Should have importance for all 14 features"
+    assert len(feature_importance) == 15, "Should have importance for all 15 features"
     assert np.all(feature_importance >= 0), "Feature importance should be non-negative"
     print(f"✓ Feature importance computed")
     

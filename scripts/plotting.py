@@ -424,7 +424,7 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
     
     # Add critical points markers
     if 'point_importance' in dfm.columns:
-        critical_points = dfm[dfm['point_importance'] > 5.0]
+        critical_points = dfm[dfm['point_importance'] > 3.5]
         added_labels = set()
         
         for idx, row in critical_points.iterrows():
@@ -470,7 +470,7 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
         
         # Add critical points markers
         if 'point_importance' in dfm.columns:
-            critical_points = dfm[dfm['point_importance'] > 5.0]
+            critical_points = dfm[dfm['point_importance'] > 3.5]
             added_labels = set()
             
             for idx, row in critical_points.iterrows():
