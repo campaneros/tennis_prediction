@@ -34,15 +34,20 @@ def load_config(path: str | None = None) -> dict:
       - try DEFAULT_CONFIG_PATH
       - if it does not exist, return default config
     """
-    #cfg = deepcopy(_DEFAULT_CONFIG)
+    default_path = os.path.join(_PROJECT_ROOT, "configs", "config.json")
+    target_path = path or default_path
 
-    print(f"{path}")
-    with open(path, "r") as f:
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(
+            f"Config file not found. Looked for '{target_path}'"
+        )
+
+    with open(target_path, "r") as f:
         try:
             cfg = json.load(f)
         except json.JSONDecodeError as e:
             raise ValueError(
-                f"Invalid JSON in config file '{path}': {e}"
+                f"Invalid JSON in config file '{target_path}': {e}"
             ) from e
 
     return cfg

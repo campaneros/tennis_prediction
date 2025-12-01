@@ -8,6 +8,37 @@ from .data_loader import (
     GAME_WINNER_COL,
 )
 
+# Canonical order for match-level feature matrices. This ensures training and
+# inference share the exact same column ordering, which is critical when using
+# numpy arrays instead of column-aware structures.
+MATCH_FEATURE_COLUMNS = [
+    "P_srv_win_long",
+    "P_srv_lose_long",
+    "P_srv_win_short",
+    "P_srv_lose_short",
+    SERVER_COL,
+    "momentum",
+    "Momentum_Diff",
+    "Score_Diff",
+    "Game_Diff",
+    "CurrentSetGamesDiff",
+    "SrvScr",
+    "RcvScr",
+    "SetNo",
+    "GameNo",
+    "PointNumber",
+    "point_importance",
+    "SetsWonDiff",
+    "SetsWonAdvantage",
+    "SetWinProbPrior",
+    "SetWinProbEdge",
+    "SetWinProbLogit",
+    "is_decider_tied",
+]
+
+# Point-level predictions reuse the exact same feature ordering.
+POINT_FEATURE_COLUMNS = MATCH_FEATURE_COLUMNS.copy()
+
 def _compute_momentum_series(leverage: np.ndarray, alpha: float) -> np.ndarray:
     """
     Exact momentum:
@@ -68,6 +99,7 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
       - SrvScr: cumulative points won when p1 served in current game
       - RcvScr: cumulative points won when p1 received in current game
       - point_importance: weight/importance of each point
+      - SetWinProbPrior / SetWinProbEdge / SetWinProbLogit: calibrated prior for P1 match win
     """
     df = df.copy()
 
@@ -273,9 +305,19 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         
         return min(weight, 7.0)  # Cap at 7.0
 
-    # Momentum difference (if columns exist)
+    # Momentum difference - normalize per MATCH to preserve match-level context
+    # Z-score normalization balances momentum across entire match duration
     if 'P1Momentum' in df.columns and 'P2Momentum' in df.columns:
-        df['Momentum_Diff'] = pd.to_numeric(df['P1Momentum'], errors='coerce').fillna(0) - pd.to_numeric(df['P2Momentum'], errors='coerce').fillna(0)
+        p1_mom = pd.to_numeric(df['P1Momentum'], errors='coerce').fillna(0)
+        p2_mom = pd.to_numeric(df['P2Momentum'], errors='coerce').fillna(0)
+        raw_diff = p1_mom - p2_mom
+        
+        # Z-score normalization per match
+        match_groups = df.groupby(MATCH_COL, sort=False).ngroup()
+        mean_per_match = raw_diff.groupby(match_groups).transform('mean')
+        std_per_match = raw_diff.groupby(match_groups).transform('std').replace(0, 1)
+        df['Momentum_Diff'] = (raw_diff - mean_per_match) / std_per_match
+        df['Momentum_Diff'] = df['Momentum_Diff'].fillna(0.0).clip(-3.0, 3.0)
     else:
         df['Momentum_Diff'] = 0.0
 
@@ -297,7 +339,17 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df['Game_Diff'] = 0.0
 
-    df['Game_Diff'] = pd.to_numeric(df['Game_Diff'], errors='coerce').fillna(0.0).clip(lower=-3.0, upper=3.0)
+    df['Game_Diff'] = pd.to_numeric(df['Game_Diff'], errors='coerce').fillna(0.0).clip(lower=-2.0, upper=2.0)
+    
+    # Current set games difference (captures in-set dominance independent of past sets)
+    # Reduced amplification from 2.5× to 1.5× to limit overreaction to current set
+    # This balances current set performance with overall match context
+    if 'P1GamesWon' in df.columns and 'P2GamesWon' in df.columns:
+        p1_games = pd.to_numeric(df['P1GamesWon'], errors='coerce').fillna(0)
+        p2_games = pd.to_numeric(df['P2GamesWon'], errors='coerce').fillna(0)
+        df['CurrentSetGamesDiff'] = ((p1_games - p2_games) * 1.5).clip(lower=-10.0, upper=10.0)
+    else:
+        df['CurrentSetGamesDiff'] = 0.0
 
     # Served Score and Received Score (cumulative within each game)
     df['p1_srv_win_game'] = (
@@ -319,8 +371,155 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     # Calculate point importance for sample weighting
     df['point_importance'] = df.apply(calculate_point_importance, axis=1)
 
-    # Normalize coarse progress indicators within each match to reduce raw-score dominance
+    # Set progression features derived from per-set winners (0=no winner yet)
     match_groups = df[MATCH_COL]
+    if 'SetWinner' in df.columns:
+        set_winners = pd.to_numeric(df['SetWinner'], errors='coerce').fillna(0.0).astype(int)
+    else:
+        set_winners = pd.Series(0, index=df.index)
+
+    p1_set_wins = ((set_winners == 1).astype(int)
+                   .groupby(match_groups)
+                   .cumsum()
+                   .astype(float))
+    p2_set_wins = ((set_winners == 2).astype(int)
+                   .groupby(match_groups)
+                   .cumsum()
+                   .astype(float))
+
+
+    df['P1SetsWon'] = p1_set_wins
+    df['P2SetsWon'] = p2_set_wins
+    df['SetsWonDiff_raw'] = df['P1SetsWon'] - df['P2SetsWon']
+    
+    # SetsWonDiff with NON-LINEAR step function:
+    # Goal: When sets tied (0-0, 1-1, 2-2) → P~0.50, rely on current set
+    #       +1 set advantage → P~0.65 (+0.15 boost)
+    #       +2 sets → P~0.80 (+0.30 boost)
+    #       +3 sets → P~0.95 (+0.45 boost, match almost won)
+    # 
+    # Implementation: Use step multipliers that grow non-linearly
+    set_progress = pd.to_numeric(df['SetNo'], errors='coerce').fillna(0.5)
+    abs_set_diff = df['SetsWonDiff_raw'].abs()
+    
+    # Step multipliers: 0 sets=0.0, 1 set=1.0, 2 sets=2.0, 3 sets=3.0
+    # Then scale: 1 set → ×0.8, 2 sets → ×1.6, 3 sets → ×2.4
+    step_multiplier = abs_set_diff * 0.8  # Linear in number of sets
+    
+    # Apply sign and scale by match progress
+    df['SetsWonDiff'] = (df['SetsWonDiff_raw'].apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0) 
+                         * step_multiplier * set_progress)
+    
+    # Binary indicator: does P1 have set advantage? (+1 for advantage, 0 for tied, -1 for disadvantage)
+    # SCALED BY 4.0 to make it strongly influential over cumulative features
+    # When sets are tied, current game/score situation should still matter via other features
+    df['SetsWonAdvantage'] = df['SetsWonDiff_raw'].apply(lambda x: 4.0 if x > 0 else (-4.0 if x < 0 else 0.0))
+
+    def compute_set_win_prior(row) -> float:
+        """
+        Heuristic prior for P1 match win prob driven by set state.
+        Constraints:
+          - Tied in sets → keep close to 0.50 (±0.15 max, before ranking boost)
+          - +1 set lead  → ~0.65 baseline
+          - +2 set lead  → ~0.80 baseline
+        Adjust with current-set games edge and (optionally) ranking gap if present.
+        """
+        set_diff = row.get('SetsWonDiff_raw', 0.0)
+        current_edge = row.get('CurrentSetGamesDiff', 0.0)
+        sets_played = row.get('P1SetsWon', 0.0) + row.get('P2SetsWon', 0.0)
+
+        # Baseline anchored on set difference (symmetrical for P2)
+        if set_diff >= 2:
+            base = 0.80
+        elif set_diff == 1:
+            base = 0.65
+        elif set_diff == 0:
+            base = 0.50
+        elif set_diff == -1:
+            base = 0.35
+        else:  # set_diff <= -2
+            base = 0.20
+
+        # Current set momentum nudges the prior; cap shift to keep ties near 50-50
+        # tanh keeps adjustment bounded for blowouts
+        edge = np.tanh(float(current_edge) / 4.0)
+        if set_diff == 0:
+            base += edge * 0.15  # at most ±0.15 when tied
+        elif abs(set_diff) == 1:
+            base += edge * 0.10  # smaller influence when already up/down a set
+        else:
+            base += edge * 0.05  # tiny tweak when two sets apart
+
+        # Optional ranking prior: allow stronger player to start above 0.65 in set 1
+        rank_boost = 0.0
+        if 'P1Rank' in row and 'P2Rank' in row:
+            try:
+                p1_rank = float(row['P1Rank'])
+                p2_rank = float(row['P2Rank'])
+                if not np.isnan(p1_rank) and not np.isnan(p2_rank):
+                    # Positive gap → P1 higher ranked. Bounded to ±0.12.
+                    rank_gap = p2_rank - p1_rank
+                    # Damp rank effect after first set (sets_played>0)
+                    damp = 0.5 if sets_played >= 1 else 1.0
+                    rank_boost = np.tanh(rank_gap / 400.0) * 0.12 * damp
+            except Exception:
+                rank_boost = 0.0
+
+        prior = base + rank_boost
+        return float(np.clip(prior, 0.05, 0.95))
+
+    df['SetWinProbPrior'] = df.apply(compute_set_win_prior, axis=1)
+    df['SetWinProbEdge'] = (df['SetWinProbPrior'] - 0.5) * 2.0  # centered, in [-1,1]
+    df['SetWinProbLogit'] = np.log(df['SetWinProbPrior'].clip(1e-6, 1 - 1e-6) / (1.0 - df['SetWinProbPrior'].clip(1e-6, 1 - 1e-6)))
+
+    # When sets are tied, damp serve/return probabilities toward 0.5 to reduce volatility.
+    # BUT: preserve current game situation (40-0, break points, etc.)
+    # Only apply dampening when BOTH sets tied AND current game is not critical
+    if all(col in df.columns for col in ["P_srv_win_long", "P_srv_lose_long", "P_srv_win_short", "P_srv_lose_short"]):
+        tie_mask = df['SetsWonDiff_raw'] == 0
+        
+        # Identify critical game situations where dampening should be reduced
+        # (match points, break points for set, 40-0 situations, etc.)
+        critical_game = df.get('point_importance', pd.Series(1.0, index=df.index)) > 3.0
+        
+        if tie_mask.any():
+            # Base dampening: 50% when sets tied
+            # But reduce to 20% in critical game situations
+            damp = np.where(critical_game & tie_mask, 0.20, 0.50)
+            
+            for col in ["P_srv_win_long", "P_srv_lose_long", "P_srv_win_short", "P_srv_lose_short"]:
+                df.loc[tie_mask, col] = df.loc[tie_mask, col] * (1.0 - damp[tie_mask]) + 0.5 * damp[tie_mask]
+    
+    # Indicator for tied decisive set (2-2 in best-of-5, or 1-1 in best-of-3 in final set)
+    # Criteria: (1) sets are tied AND (2) at least 2 sets have been completed (P1+P2 >= 2)
+    # Use SetNo_original to check if we're late in the match (SetNo >= 4 means at least set 4)
+    sets_completed = df['P1SetsWon'] + df['P2SetsWon']
+    in_late_set = pd.to_numeric(df.get('SetNo_original', df['SetNo']), errors='coerce').fillna(0) >= 4
+    df['is_decider_tied'] = ((df['SetsWonDiff_raw'] == 0) & (sets_completed >= 2) & in_late_set).astype(float)
+    
+    # Dampen cumulative features (momentum, long serve stats) in tied decisive situations
+    # This reduces historical bias when the match is truly 50-50
+    tied_mask = df['is_decider_tied'] == 1.0
+    dampen_factor = 0.02  # reduce momentum/long-window influence to 2% in ties (very aggressive, from 5%)
+    
+    if 'momentum' in df.columns:
+        df.loc[tied_mask, 'momentum'] = df.loc[tied_mask, 'momentum'] * dampen_factor
+    
+    for col in ['P_srv_win_long', 'P_srv_lose_long']:
+        if col in df.columns:
+            # Blend long-window with short-window when tied (rely more on recent form)
+            short_col = col.replace('long', 'short')
+            if short_col in df.columns:
+                df.loc[tied_mask, col] = (
+                    df.loc[tied_mask, col] * dampen_factor + 
+                    df.loc[tied_mask, short_col] * (1 - dampen_factor)
+                )
+
+    # Normalize coarse progress indicators within each match to reduce raw-score dominance
+    # Save original SetNo before normalization (needed for filtering/analysis)
+    if 'SetNo' in df.columns:
+        df['SetNo_original'] = df['SetNo'].copy()
+    
     for col in ['GameNo', 'PointNumber', 'SetNo']:
         if col in df.columns:
             numeric = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -378,6 +577,7 @@ def add_rolling_serve_return_features(
         ).astype(int)
 
         # Rolling sums for both long and short windows
+        # Accumulate across entire match to capture player form evolution
         for window, tag in ((long_window, "long"), (short_window, "short")):
             df[f"{srv_win_col}_roll_{tag}"] = (
                 df.groupby(MATCH_COL)[srv_win_col]
@@ -449,6 +649,16 @@ def add_leverage_and_momentum(df: pd.DataFrame, alpha: float) -> pd.DataFrame:
 
     df["leverage"] = np.where(server_wins, leverage_raw, 0.0)
 
+    # Further damp leverage when sets are tied to avoid extreme swings.
+    # BUT: preserve leverage in critical game situations (break/set/match points)
+    if "SetsWonDiff_raw" in df.columns:
+        tie_mask = df["SetsWonDiff_raw"] == 0
+        if tie_mask.any():
+            critical_game = df.get('point_importance', pd.Series(1.0, index=df.index)) > 3.0
+            # 35% leverage when tied + normal, 70% when tied + critical
+            leverage_factor = np.where(critical_game, 0.70, 0.35)
+            df.loc[tie_mask, "leverage"] = df.loc[tie_mask, "leverage"] * leverage_factor[tie_mask]
+
     # Check if point_importance exists (it should be computed before this)
     if "point_importance" not in df.columns:
         # Fallback: use uniform weights
@@ -459,6 +669,7 @@ def add_leverage_and_momentum(df: pd.DataFrame, alpha: float) -> pd.DataFrame:
     df["weighted_leverage"] = df["leverage"] * df["point_importance"]
     
     # Compute weighted momentum using EWMA
+    # Accumulate across entire match to capture psychological momentum
     df["momentum"] = (
         df.groupby(MATCH_COL)["weighted_leverage"]
           .transform(lambda x: x.ewm(alpha=alpha, adjust=False).mean())
@@ -472,46 +683,37 @@ def add_leverage_and_momentum(df: pd.DataFrame, alpha: float) -> pd.DataFrame:
 
 def build_dataset(df: pd.DataFrame):
     """
-    Build feature matrix X and target y for training.
+        Build feature matrix X and target y for training.
 
-    Features:
-      - P_srv_win_long
-      - P_srv_lose_long
-      - P_srv_win_short   (real-time window)
-      - P_srv_lose_short  (real-time window)
-      - PointServer (Srv)
-      - momentum (EWMA of leverage)
-      - Momentum_Diff: P1Momentum - P2Momentum
-      - Score_Diff: P1Score - P2Score
-      - Game_Diff: P1GamesWon - P2GamesWon
-      - SrvScr: cumulative points won when p1 served in game
-      - RcvScr: cumulative points won when p1 received in game
-      - SetNo (St)
-      - GameNo (Gm)
-      - PointNumber (Pt)
-      - point_importance: critical point indicator (1.0-7.0)
+        Features (22 total):
+            - P_srv_win_long
+            - P_srv_lose_long
+            - P_srv_win_short   (real-time window)
+            - P_srv_lose_short  (real-time window)
+            - PointServer (Srv)
+            - momentum (EWMA of leverage)
+            - Momentum_Diff: P1Momentum - P2Momentum (rolling z-score, window=50)
+            - Score_Diff: P1Score - P2Score
+            - Game_Diff: P1GamesWon - P2GamesWon
+            - CurrentSetGamesDiff: games difference in current set (in-set performance)
+            - SrvScr: cumulative points won when p1 served in game
+            - RcvScr: cumulative points won when p1 received in game
+            - SetNo (St)
+            - GameNo (Gm)
+            - PointNumber (Pt)
+            - point_importance: critical point indicator (1.0-7.0)
+            - SetsWonDiff: set difference scaled by match progress (non-linear weighting)
+            - SetsWonAdvantage: +1 when P1 leads in sets, -1 when behind, 0 when tied
+            - SetWinProbPrior: calibrated prior for P1 match win (0.05-0.95)
+            - SetWinProbEdge: centered prior in [-1,1] to stabilize training
+            - SetWinProbLogit: log-odds of the calibrated prior
+            - is_decider_tied: 1.0 when sets are level in the final set, 0.0 otherwise
 
-    Target:
-      - p1_wins_match
-    """
+        Target:
+            - p1_wins_match
+        """
     df = df.copy()
-    feature_cols = [
-        "P_srv_win_long",
-        "P_srv_lose_long",
-        "P_srv_win_short",
-        "P_srv_lose_short",
-        SERVER_COL,
-        "momentum",
-        "Momentum_Diff",
-        "Score_Diff",
-        "Game_Diff",
-        "SrvScr",
-        "RcvScr",
-        "SetNo",
-        "GameNo",
-        "PointNumber",
-        "point_importance",
-    ]
+    feature_cols = MATCH_FEATURE_COLUMNS.copy()
 
     # Ensure all feature columns are numeric
     for col in feature_cols:
@@ -519,13 +721,94 @@ def build_dataset(df: pd.DataFrame):
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
     X_all = df[feature_cols].values.astype(float)
-    y_all = df["p1_wins_match"].values
+
+    # Hard labels (0/1)
+    y_hard = df["p1_wins_match"].values.astype(float)
     
     # Extract point importance for sample weighting
     if 'point_importance' in df.columns:
         weights_all = df['point_importance'].values.astype(float)
     else:
         weights_all = np.ones(len(df), dtype=float)
+    
+    # Boost weights based on match competitiveness
+    # Competitive matches (4-5 sets) are underrepresented, so upweight them
+    match_groups = df.groupby(MATCH_COL, sort=False).ngroup()
+    
+    # Count total sets per match (P1SetsWon + P2SetsWon at end of match)
+    if 'P1SetsWon' in df.columns and 'P2SetsWon' in df.columns:
+        total_sets_per_match = (df['P1SetsWon'] + df['P2SetsWon']).groupby(match_groups).transform('max')
+        
+        # Weight multiplier based on competitiveness:
+        # 5-set matches (very competitive): 4.0× (increased to teach model balanced situations)
+        # 4-set matches (competitive): 2.5×
+        # 3-set matches: 1.0× (baseline)
+        competitive_weight = np.where(total_sets_per_match >= 4.5, 4.0,  # 5-set
+                                     np.where(total_sets_per_match >= 3.5, 2.5,  # 4-set
+                                             1.0))  # 3-set or less
+        weights_all = weights_all * competitive_weight
+    
+    # Additional boost for tied-decider situations (2-2 in final set)
+    if 'is_decider_tied' in df.columns:
+        tied_boost = 2.0  # additional 2× for tied final-set points
+        is_tied = df['is_decider_tied'].values.astype(float)
+        weights_all = weights_all * (1.0 + is_tied * (tied_boost - 1.0))
+
+    mask = ~np.isnan(X_all).any(axis=1)
+    X = X_all[mask]
+    y_hard_masked = y_hard[mask]
+    sample_weights = weights_all[mask]
+
+    # Return only hard labels and weights (soft labels removed)
+    return X, None, mask, sample_weights, y_hard_masked
+
+
+def build_dataset_point_level(df: pd.DataFrame):
+    """
+    Build feature matrix X and target y for POINT-LEVEL prediction.
+    
+    Target: 1 if P1 wins the current point, 0 if P2 wins
+    
+    This eliminates look-ahead bias since the model predicts individual points
+    rather than the match outcome. Features mirror the match-level model, including
+    set-advantage and calibrated set-win priors/logits.
+    """
+    df = df.copy()
+    feature_cols = POINT_FEATURE_COLUMNS.copy()
+
+    # Ensure all feature columns are numeric
+    for col in feature_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    X_all = df[feature_cols].values.astype(float)
+    
+    # Target: who wins THIS POINT (not the match)
+    if 'PointWinner' in df.columns:
+        y_all = (df['PointWinner'] == 1).astype(int).values
+    else:
+        raise ValueError("PointWinner column required for point-level prediction")
+    
+    # Extract point importance for sample weighting
+    if 'point_importance' in df.columns:
+        weights_all = df['point_importance'].values.astype(float)
+    else:
+        weights_all = np.ones(len(df), dtype=float)
+    
+    # Apply same competitive match weighting as match-level model
+    match_groups = df.groupby(MATCH_COL, sort=False).ngroup()
+    
+    if 'P1SetsWon' in df.columns and 'P2SetsWon' in df.columns:
+        total_sets_per_match = (df['P1SetsWon'] + df['P2SetsWon']).groupby(match_groups).transform('max')
+        competitive_weight = np.where(total_sets_per_match >= 4.5, 4.0,
+                                     np.where(total_sets_per_match >= 3.5, 2.5,
+                                             1.0))
+        weights_all = weights_all * competitive_weight
+    
+    if 'is_decider_tied' in df.columns:
+        tied_boost = 2.0
+        is_tied = df['is_decider_tied'].values.astype(float)
+        weights_all = weights_all * (1.0 + is_tied * (tied_boost - 1.0))
 
     mask = ~np.isnan(X_all).any(axis=1)
     X = X_all[mask]

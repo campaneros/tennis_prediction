@@ -3,8 +3,63 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve
+import plotly.graph_objects as go
 
 from .data_loader import MATCH_COL
+
+
+def _save_interactive_plot(traces, verticals, title, filepath):
+    fig = go.Figure()
+    for trace in traces:
+        fig.add_trace(go.Scatter(
+            x=trace["x"],
+            y=trace["y"],
+            mode="lines",
+            name=trace["name"],
+            line=dict(color=trace.get("color"), dash=trace.get("dash", "solid"), width=trace.get("width", 2))
+        ))
+
+    legend_styles = {}
+    for vline in verticals:
+        fig.add_vline(
+            x=vline["x"],
+            line=dict(color=vline.get("color", "gray"), dash=vline.get("dash", "dash"), width=vline.get("width", 2))
+        )
+
+        label = vline.get("label")
+        if label and label not in legend_styles:
+            legend_styles[label] = {
+                "color": vline.get("color", "gray"),
+                "dash": vline.get("dash", "dash"),
+                "width": vline.get("width", 2)
+            }
+
+    for label, style in legend_styles.items():
+        fig.add_trace(go.Scatter(
+            x=[None],
+            y=[None],
+            mode="lines",
+            name=label,
+            line=dict(color=style["color"], dash=style["dash"], width=style["width"]),
+            showlegend=True,
+            hoverinfo="skip"
+        ))
+    fig.update_layout(
+        title=dict(text=title, y=0.96, x=0.0, xanchor="left"),
+        xaxis_title="Point index in match",
+        yaxis_title="Match win probability",
+        yaxis=dict(range=[0, 1]),
+        template="plotly_white",
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="left",
+            x=0.0
+        ),
+        margin=dict(t=100, b=120)
+    )
+    fig.write_html(filepath)
 
 
 def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot_dir: str):
@@ -23,6 +78,58 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
 
     x = np.arange(len(dfm))
 
+    # Precompute critical point markers to reuse across both plots
+    vertical_cache = []
+    if 'point_importance' in dfm.columns:
+        break_points = dfm[dfm['point_importance'] > 2.0]
+        for idx, row in break_points.iterrows():
+            importance = row['point_importance']
+            if importance >= 6.5:
+                label = "Decisive Point"
+                color = 'darkred'
+                alpha = 0.6
+                linestyle = '-'
+            elif importance >= 6.0:
+                label = "Set/Break Point"
+                color = 'darkorange'
+                alpha = 0.5
+                linestyle = '--'
+            elif importance >= 5.0:
+                label = "Critical Point"
+                color = 'purple'
+                alpha = 0.4
+                linestyle = ':'
+            elif importance >= 3.5:
+                label = "Important Point"
+                color = 'brown'
+                alpha = 0.3
+                linestyle = '-.'
+            else:
+                label = "Break Point"
+                color = 'gray'
+                alpha = 0.2
+                linestyle = ':'
+            vertical_cache.append({
+                "idx": idx,
+                "label": label,
+                "color": color,
+                "alpha": alpha,
+                "linestyle": linestyle,
+            })
+
+    vertical_cache = []
+    if 'point_importance' in dfm.columns:
+        critical_points = dfm[dfm['point_importance'] > 3.5]
+        for idx, row in critical_points.iterrows():
+            importance = row['point_importance']
+            if importance >= 6.5:
+                label, color, alpha, linestyle = "Decisive", 'darkred', 0.5, '-'
+            elif importance >= 6.0:
+                label, color, alpha, linestyle = "Set/Break", 'darkorange', 0.4, '--'
+            else:
+                label, color, alpha, linestyle = "Critical", 'purple', 0.3, ':'
+            vertical_cache.append({"idx": idx, "label": label, "color": color, "alpha": alpha, "linestyle": linestyle})
+
     plt.figure(figsize=(14, 7))
 
     plt.plot(x, dfm["prob_p1"], label="P1 wins match (current)", linewidth=2)
@@ -37,19 +144,26 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
         "--", label="P2 wins | server loses point", linewidth=1.5,
     )
 
+    interactive_traces = [
+        {"x": x, "y": dfm["prob_p1"], "name": "P1 wins match (current)", "color": "blue"},
+        {"x": x, "y": dfm["prob_p2"], "name": "P2 wins match (current)", "color": "orange"},
+        {"x": x, "y": dfm["prob_p1_lose_srv"], "name": "P1 wins | server loses point", "color": "green", "dash": "dash"},
+        {"x": x, "y": dfm["prob_p2_lose_srv"], "name": "P2 wins | server loses point", "color": "red", "dash": "dash"},
+    ]
+    vertical_lines = []
+
     # Add vertical lines and annotations for critical points
     if 'point_importance' in dfm.columns:
-        # Mark all break points (importance > 2.0, which includes break point situations)
         break_points = dfm[dfm['point_importance'] > 2.0]
-        
-        # Collect labels for legend
+
         added_labels = set()
-        
+        dash_map = {'-': 'solid', '--': 'dash', ':': 'dot', '-.': 'dashdot'}
+        shown_labels = set()
+
         for idx, row in break_points.iterrows():
             point_idx = idx
             importance = row['point_importance']
-            
-            # Determine point type based on importance level
+
             if importance >= 6.5:
                 label = "Decisive Point"
                 color = 'darkred'
@@ -80,15 +194,25 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
                 alpha = 0.2
                 linestyle = ':'
                 linewidth = 1.0
-            
-            # Draw vertical line with label only once per category
+
             if label not in added_labels:
-                plt.axvline(x=point_idx, color=color, alpha=alpha, linestyle=linestyle, 
-                           linewidth=linewidth, label=label)
+                plt.axvline(x=point_idx, color=color, alpha=alpha, linestyle=linestyle,
+                            linewidth=linewidth, label=label)
                 added_labels.add(label)
             else:
-                plt.axvline(x=point_idx, color=color, alpha=alpha, linestyle=linestyle, 
-                           linewidth=linewidth)
+                plt.axvline(x=point_idx, color=color, alpha=alpha, linestyle=linestyle,
+                            linewidth=linewidth)
+
+            show_label = label not in shown_labels
+            vertical_lines.append({
+                "x": point_idx,
+                "color": color,
+                "dash": dash_map.get(linestyle, 'dash'),
+                "width": linewidth,
+                "label": label if show_label else None,
+            })
+            if show_label:
+                shown_labels.add(label)
 
     plt.xlabel("Point index in match")
     plt.ylabel("Match win probability")
@@ -103,6 +227,11 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
     plt.close()
 
     print(f"[plot] Saved match probability plot to: {fname}")
+
+    html_name = os.path.join(plot_dir, f"match_{match_id_to_plot}_probabilities.html")
+    _save_interactive_plot(interactive_traces, vertical_lines,
+                           f"Match probabilities - {match_id_to_plot}", html_name)
+    print(f"[plot] Saved interactive plot to: {html_name}")
 
 
 def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot: str, plot_dir: str):
@@ -403,6 +532,45 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
         return
 
     x = np.arange(len(dfm))
+
+    # Precompute critical point metadata for reuse
+    vertical_cache = []
+    if 'point_importance' in dfm.columns:
+        break_points = dfm[dfm['point_importance'] > 2.0]
+        for idx, row in break_points.iterrows():
+            importance = row['point_importance']
+            if importance >= 6.5:
+                label = "Decisive Point"
+                color = 'darkred'
+                alpha = 0.6
+                linestyle = '-'
+            elif importance >= 6.0:
+                label = "Set/Break Point"
+                color = 'darkorange'
+                alpha = 0.5
+                linestyle = '--'
+            elif importance >= 5.0:
+                label = "Critical Point"
+                color = 'purple'
+                alpha = 0.4
+                linestyle = ':'
+            elif importance >= 3.5:
+                label = "Important Point"
+                color = 'brown'
+                alpha = 0.3
+                linestyle = '-.'
+            else:
+                label = "Break Point"
+                color = 'gray'
+                alpha = 0.2
+                linestyle = ':'
+            vertical_cache.append({
+                "idx": idx,
+                "label": label,
+                "color": color,
+                "alpha": alpha,
+                "linestyle": linestyle,
+            })
     
     # Check which columns are available
     has_importance = 'prob_p1' in dfm.columns and 'prob_p1_lose_srv' in dfm.columns
@@ -423,26 +591,23 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
              linewidth=1.5, color='red')
     
     # Add critical points markers
-    if 'point_importance' in dfm.columns:
-        critical_points = dfm[dfm['point_importance'] > 3.5]
+    vertical_lines1 = []
+    if vertical_cache:
         added_labels = set()
-        
-        for idx, row in critical_points.iterrows():
-            importance = row['point_importance']
-            
-            if importance >= 6.5:
-                label, color, alpha, linestyle = "Decisive", 'darkred', 0.5, '-'
-            elif importance >= 6.0:
-                label, color, alpha, linestyle = "Set/Break", 'darkorange', 0.4, '--'
+        dash_map = {'-': 'solid', '--': 'dash', ':': 'dot'}
+        for v in vertical_cache:
+            show_label = v['label'] not in added_labels
+            if show_label:
+                ax1.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2, label=v['label'])
+                added_labels.add(v['label'])
             else:
-                label, color, alpha, linestyle = "Critical", 'purple', 0.3, ':'
-            
-            if label not in added_labels:
-                ax1.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
-                           linewidth=2, label=label)
-                added_labels.add(label)
-            else:
-                ax1.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, linewidth=2)
+                ax1.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2)
+            vertical_lines1.append({
+                "x": v['idx'],
+                "color": v['color'],
+                "dash": dash_map.get(v['linestyle'], 'dash'),
+                "label": v['label'] if show_label else None
+            })
     
     ax1.set_xlabel("Point index in match")
     ax1.set_ylabel("Match win probability")
@@ -456,6 +621,16 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
     fig1.savefig(fname1, dpi=150)
     plt.close(fig1)
     print(f"[plot] Saved importance-based plot to: {fname1}")
+
+    traces1 = [
+        {"x": x, "y": dfm["prob_p1"], "name": "P1 wins match (current)", "color": "blue"},
+        {"x": x, "y": dfm["prob_p2"], "name": "P2 wins match (current)", "color": "orange"},
+        {"x": x, "y": dfm["prob_p1_lose_srv"], "name": "P1 wins | server loses (importance)", "color": "green", "dash": "dash"},
+        {"x": x, "y": dfm["prob_p2_lose_srv"], "name": "P2 wins | server loses (importance)", "color": "red", "dash": "dash"},
+    ]
+    html1 = os.path.join(plot_dir, f"match_{match_id_to_plot}_importance.html")
+    _save_interactive_plot(traces1, vertical_lines1, f"Match probabilities (importance) - {match_id_to_plot}", html1)
+    print(f"[plot] Saved interactive importance plot to: {html1}")
     
     # PLOT 2: Simulation-based counterfactual (if available)
     if has_alt:
@@ -469,26 +644,23 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
                  linewidth=1.5, color='red')
         
         # Add critical points markers
-        if 'point_importance' in dfm.columns:
-            critical_points = dfm[dfm['point_importance'] > 3.5]
+        vertical_lines2 = []
+        if vertical_cache:
             added_labels = set()
-            
-            for idx, row in critical_points.iterrows():
-                importance = row['point_importance']
-                
-                if importance >= 6.5:
-                    label, color, alpha, linestyle = "Decisive", 'darkred', 0.5, '-'
-                elif importance >= 6.0:
-                    label, color, alpha, linestyle = "Set/Break", 'darkorange', 0.4, '--'
+            dash_map = {'-': 'solid', '--': 'dash', ':': 'dot'}
+            for v in vertical_cache:
+                show_label = v['label'] not in added_labels
+                if show_label:
+                    ax2.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2, label=v['label'])
+                    added_labels.add(v['label'])
                 else:
-                    label, color, alpha, linestyle = "Critical", 'purple', 0.3, ':'
-                
-                if label not in added_labels:
-                    ax2.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, 
-                               linewidth=2, label=label)
-                    added_labels.add(label)
-                else:
-                    ax2.axvline(x=idx, color=color, alpha=alpha, linestyle=linestyle, linewidth=2)
+                    ax2.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2)
+                vertical_lines2.append({
+                    "x": v['idx'],
+                    "color": v['color'],
+                    "dash": dash_map.get(v['linestyle'], 'dash'),
+                    "label": v['label'] if show_label else None
+                })
         
         ax2.set_xlabel("Point index in match")
         ax2.set_ylabel("Match win probability")
@@ -502,5 +674,15 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
         fig2.savefig(fname2, dpi=150)
         plt.close(fig2)
         print(f"[plot] Saved {mode} plot to: {fname2}")
+
+        traces2 = [
+            {"x": x, "y": dfm["prob_p1_alt"], "name": "P1 wins match (current)", "color": "blue"},
+            {"x": x, "y": dfm["prob_p2_alt"], "name": "P2 wins match (current)", "color": "orange"},
+            {"x": x, "y": dfm["prob_p1_lose_alt"], "name": f"P1 wins | server loses ({mode})", "color": "green", "dash": "dash"},
+            {"x": x, "y": dfm["prob_p2_lose_alt"], "name": f"P2 wins | server loses ({mode})", "color": "red", "dash": "dash"},
+        ]
+        html2 = os.path.join(plot_dir, f"match_{match_id_to_plot}_{mode}.html")
+        _save_interactive_plot(traces2, vertical_lines2, f"Match probabilities ({mode}) - {match_id_to_plot}", html2)
+        print(f"[plot] Saved interactive {mode} plot to: {html2}")
     else:
         print(f"[plot] No alternative counterfactual data available for {mode} plot")

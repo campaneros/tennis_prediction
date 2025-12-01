@@ -31,7 +31,7 @@ def _default_model():
     )
 
 
-def train_model(file_paths, model_out: str, config_path: str | None = None):
+def train_model(file_paths, model_out: str, config_path=None):
     """
     Train the XGBoost model on one or more CSV files and save it to 'model_out'.
 
@@ -48,12 +48,33 @@ def train_model(file_paths, model_out: str, config_path: str | None = None):
     alpha = float(fcfg.get("momentum_alpha", 1.2))
 
     df = load_points_multiple(file_paths)
+    
+    # Filter out women's matches (match_id >= 2000) - they are best-of-3, not best-of-5
+    # This ensures model learns from men's tennis where 5-set matches are possible
+    df['match_num'] = df['match_id'].str.extract(r'-(\d+)$')[0].astype(int)
+    original_count = len(df)
+    df = df[df['match_num'] < 2000].copy()
+    
+    # Also exclude match 1701 to avoid test set leakage
+    test_match_filter = ~df['match_id'].str.contains('1701')
+    excluded_1701 = (~test_match_filter).sum()
+    df = df[test_match_filter].copy()
+    
+    df = df.drop(columns=['match_num'])
+    filtered_count = original_count - len(df)
+    if filtered_count > 0:
+        print(f"[train] Filtered {filtered_count} points total:")
+        print(f"[train]   - Women's matches (best-of-3): {filtered_count - excluded_1701}")
+        print(f"[train]   - Match 1701 (test set): {excluded_1701}")
+        print(f"[train] Training on {len(df)} points from men's matches")
+    
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
 
-    X, y, _, sample_weights = build_dataset(df)
+    X, _, _, sample_weights, y = build_dataset(df)
+    y = y.astype(int)
     train_cfg = cfg.get("training", {})
     weight_exp = float(train_cfg.get("sample_weight_exponent", 1.0))
     adjusted_weights = np.power(sample_weights, weight_exp)
@@ -63,9 +84,14 @@ def train_model(file_paths, model_out: str, config_path: str | None = None):
     print(f"[train] weight exponent: {weight_exp}")
     print(f"[train] sample weights - mean: {adjusted_weights.mean():.2f}, max: {adjusted_weights.max():.2f}")
 
-    X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
-        X, y, adjusted_weights, test_size=0.2, random_state=42, stratify=y
+    idx = np.arange(len(X))
+    idx_train, idx_test = train_test_split(
+        idx, test_size=0.2, random_state=42, stratify=y
     )
+
+    X_train, X_test = X[idx_train], X[idx_test]
+    y_train, y_test = y[idx_train], y[idx_test]
+    w_train, w_test = adjusted_weights[idx_train], adjusted_weights[idx_test]
 
     model = _default_model()
     model.fit(X_train, y_train, sample_weight=w_train)

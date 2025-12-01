@@ -2,7 +2,7 @@
   "features": {
     "long_window": 20,
     "short_window": 5,
-    "momentum_alpha": 0.6
+    "momentum_alpha": 0.35
   },
   "training": {
     "sample_weight_exponent": 0.5

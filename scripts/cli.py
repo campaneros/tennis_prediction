@@ -2,6 +2,7 @@
 import argparse
 
 from .model import train_model
+from .model_point import train_point_model
 from .prediction import run_prediction
 from .hyperopt import run_hyperopt
 from .plotting import plot_match_probabilities
@@ -16,13 +17,22 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
 # TRAIN
-    train_p = subparsers.add_parser("train", help="Train a model")
+    train_p = subparsers.add_parser("train", help="Train a model (match-level)")
     train_p.add_argument("--files", nargs="+", required=True,
                          help="List of CSV point-by-point files")
     train_p.add_argument("--model-out", required=True,
                          help="Path to save trained model (JSON)")
     train_p.add_argument("--config", default=None,
                          help="Path to JSON config file (default: config.json)")
+
+    # TRAIN-POINT (new)
+    train_point_p = subparsers.add_parser("train-point", help="Train point-level model (predicts point winner)")
+    train_point_p.add_argument("--files", nargs="+", required=True,
+                              help="List of CSV point-by-point files")
+    train_point_p.add_argument("--model-out", required=True,
+                              help="Path to save trained model (JSON)")
+    train_point_p.add_argument("--config", default=None,
+                              help="Path to JSON config file (default: config.json)")
 
     # PREDICT
     pred_p = subparsers.add_parser("predict", help="Predict probabilities and plot")
@@ -65,6 +75,9 @@ def main():
 
     if args.command == "train":
         train_model(args.files, args.model_out, config_path=args.config)
+    
+    elif args.command == "train-point":
+        train_point_model(args.files, args.model_out, config_path=args.config)
 
     elif args.command == "predict":
         mode = getattr(args, 'mode', 'importance')

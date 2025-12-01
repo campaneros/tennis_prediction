@@ -3,4 +3,5 @@ pandas
 xgboost
 scikit-learn
 matplotlib
+plotly
 pytest
