@@ -81,6 +81,88 @@ weight = point_importance^0.5 × competitive_multiplier × tied_boost
 
 ---
 
+## How the Model Learns Match Win Probability
+
+### Training Approach: Point-by-Point Classification
+
+The model uses **XGBoost Classifier** trained on every point of historical matches with a binary target:
+
+```python
+target = 1 if P1 wins the match, 0 if P2 wins
+```
+
+**Key Insight**: Every point in a match gets labeled with the final outcome, creating a massive dataset where the model learns patterns that correlate with eventual victory.
+
+### Training Data Structure
+
+From ~800k points across men's Grand Slam matches (2011-2018):
+- Each row = one point in a match
+- Features = game state at that exact moment (score, momentum, set count, etc.)
+- Label = who ultimately won the match
+
+Example:
+```
+Point 1 of match → P1 eventually wins → label = 1
+Point 2 of match → P1 eventually wins → label = 1
+...
+Point 423 of match → P1 eventually wins → label = 1
+```
+
+### What the Model Learns
+
+Through gradient boosting, XGBoost discovers patterns like:
+
+1. **Set advantage is crucial**:
+   - If `SetsWonAdvantage = +4.0` → Strong signal P1 wins
+   - If `SetsWonAdvantage = 0.0` → Balanced, other features matter more
+
+2. **Critical moments matter**:
+   - Break points, set points carry higher weight (via sample weighting)
+   - Model learns these are predictive of final outcome
+
+3. **Momentum and form**:
+   - Recent performance (short windows) vs historical (long windows)
+   - Current set dominance vs match-wide statistics
+
+4. **Match progression**:
+   - Later sets (SetNo=4,5) in tied situations get special treatment
+   - Model learns probability trajectories change differently early vs late
+
+### Probability Calibration
+
+The model outputs **P(P1 wins match | current game state)** via:
+
+```python
+model.predict_proba(features)[:, 1]  # Probability for class 1 (P1 wins)
+```
+
+XGBoost's internal calibration comes from:
+- **Logistic loss function**: Naturally outputs probabilities
+- **Stratified cross-validation**: Prevents overfitting to imbalanced scenarios
+- **Sample weights**: Upweights critical/competitive points
+
+### Why This Works
+
+The approach leverages **temporal structure**:
+- Early match points with tied sets → probability ≈ 0.5
+- Mid-match after one player wins 2 sets → probability shifts toward ~0.65-0.70
+- Late match at match point → probability ≈ 0.95+
+
+The model learns these probability dynamics from observing hundreds of thousands of real match trajectories.
+
+### Handling Bias
+
+To prevent the model from over-relying on cumulative statistics when sets are tied:
+
+1. **Feature dampening**: Serve/return stats pulled toward 0.5 when sets tied
+2. **SetsWonAdvantage dominance**: Large weight (±4.0) forces reset when tied
+3. **Competitive match upweighting**: 5-set matches get 4× weight to learn balanced scenarios
+4. **Tied decisive set boost**: 2× weight when sets are 2-2 in set 5
+
+This ensures probabilities stay realistic (near 0.5 when truly balanced) while still capturing who's dominating the current game/set.
+
+---
+
 # 1. Setup
 
 ```
