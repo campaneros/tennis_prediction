@@ -1,9 +1,10 @@
 import os
 import numpy as np
 
-from .data_loader import load_points_multiple, MATCH_COL, WINDOW
+from .data_loader import load_points_multiple, MATCH_COL, SERVER_COL, WINDOW
 from .config import load_config
 from .features import (
+    MATCH_FEATURE_COLUMNS,
     add_match_labels,
     add_rolling_serve_return_features,
     add_leverage_and_momentum,
@@ -93,6 +94,9 @@ def simulate_score_after_point_loss(row, server_wins: bool):
     return new_row
 
 
+_FEATURE_INDEX = {name: idx for idx, name in enumerate(MATCH_FEATURE_COLUMNS)}
+
+
 def advance_game_state_simple(row_features, server_wins_point: bool, point_importance: float = 1.0, eff_window: float = 20.0):
     """
     Update features to simulate counterfactual scenario where server loses/wins the point.
@@ -102,22 +106,29 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     - Set points (importance ~3-5)
     - Tiebreaks (importance ~3-5)
 
-    Current feature order (15 features):
-    [0] P_srv_win_long
-    [1] P_srv_lose_long
+    Current feature order (22 features):
+    [0] P_srv_win_long (dampened when tied)
+    [1] P_srv_lose_long (dampened when tied)
     [2] P_srv_win_short
     [3] P_srv_lose_short
     [4] PointServer
-    [5] momentum
+    [5] momentum (dampened when tied)
     [6] Momentum_Diff
     [7] Score_Diff
     [8] Game_Diff
-    [9] SrvScr
-    [10] RcvScr
-    [11] SetNo
-    [12] GameNo
-    [13] PointNumber
-    [14] point_importance
+    [9] CurrentSetGamesDiff
+    [10] SrvScr
+    [11] RcvScr
+    [12] SetNo
+    [13] GameNo
+    [14] PointNumber
+    [15] point_importance
+    [16] SetsWonDiff (scaled by match progress)
+    [17] SetsWonAdvantage
+    [18] SetWinProbPrior
+    [19] SetWinProbEdge
+    [20] SetWinProbLogit
+    [21] is_decider_tied (1.0 in tied final set)
 
     For the counterfactual, we update:
     - P_srv_win/lose (long and short) using Bayesian update, amplified by importance
@@ -130,14 +141,15 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     x = row_features.copy()
     
     # Extract long window probabilities
-    P_win_long = float(x[0])
-    P_lose_long = float(x[1])
-    P_win_short = float(x[2])
-    P_lose_short = float(x[3])
-    server = int(x[4])
-    current_momentum = float(x[5])
-    score_diff = float(x[7])
-    game_diff = float(x[8])
+    idx = _FEATURE_INDEX
+    P_win_long = float(x[idx["P_srv_win_long"]])
+    P_lose_long = float(x[idx["P_srv_lose_long"]])
+    P_win_short = float(x[idx["P_srv_win_short"]])
+    P_lose_short = float(x[idx["P_srv_lose_short"]])
+    server = int(x[idx[SERVER_COL]])
+    current_momentum = float(x[idx["momentum"]])
+    score_diff = float(x[idx["Score_Diff"]])
+    game_diff = float(x[idx["Game_Diff"]])
     
     # Normalize probabilities
     def normalize_probs(p_win, p_lose):
@@ -192,8 +204,8 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
         beta_long_new = beta_long + update_strength
     
     total_long = alpha_long_new + beta_long_new
-    x[0] = alpha_long_new / total_long
-    x[1] = beta_long_new / total_long
+    x[idx["P_srv_win_long"]] = alpha_long_new / total_long
+    x[idx["P_srv_lose_long"]] = beta_long_new / total_long
     
     # Bayesian update for short window (more sensitive) - also amplified
     short_window = 5.0
@@ -208,12 +220,12 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
         beta_short_new = beta_short + update_strength
     
     total_short = alpha_short_new + beta_short_new
-    x[2] = alpha_short_new / total_short
-    x[3] = beta_short_new / total_short
+    x[idx["P_srv_win_short"]] = alpha_short_new / total_short
+    x[idx["P_srv_lose_short"]] = beta_short_new / total_short
     
     # Update momentum based on leverage and importance
     # Critical points have much larger momentum impact
-    raw_leverage = max(0.0, x[0] - x[1])
+    raw_leverage = max(0.0, x[idx["P_srv_win_long"]] - x[idx["P_srv_lose_long"]])
     
     # Cap leverage for normal points to prevent outlier changes
     # For normal points (importance <= 1.5), cap leverage at 0.15
@@ -234,13 +246,13 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     
     if server_wins_point:
         # Winning critical point increases momentum significantly
-        x[5] = current_momentum + momentum_change
+        x[idx["momentum"]] = current_momentum + momentum_change
     else:
         # Losing critical point decreases momentum significantly
-        x[5] = current_momentum - momentum_change
+        x[idx["momentum"]] = current_momentum - momentum_change
     
     # Clip momentum to reasonable range
-    x[5] = np.clip(x[5], -3.0, 3.0)
+    x[idx["momentum"]] = np.clip(x[idx["momentum"]], -3.0, 3.0)
     
     # Update Game_Diff and Score_Diff using smooth scaling
     # Use importance_factor^2.0 for game/score to suppress normal point changes
@@ -251,38 +263,38 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     # Apply game differential change
     if server == 1:
         if server_wins_point:
-            x[8] = game_diff + game_change
+            x[idx["Game_Diff"]] = game_diff + game_change
         else:
-            x[8] = game_diff - game_change
+            x[idx["Game_Diff"]] = game_diff - game_change
     else:
         if server_wins_point:
-            x[8] = game_diff - game_change
+            x[idx["Game_Diff"]] = game_diff - game_change
         else:
-            x[8] = game_diff + game_change
-    x[8] = np.clip(x[8], -3.0, 3.0)
+            x[idx["Game_Diff"]] = game_diff + game_change
+    x[idx["Game_Diff"]] = np.clip(x[idx["Game_Diff"]], -3.0, 3.0)
     
     # Apply score differential change
     if server == 1:
         if server_wins_point:
-            x[7] = score_diff + score_change
+            x[idx["Score_Diff"]] = score_diff + score_change
         else:
-            x[7] = score_diff - score_change
+            x[idx["Score_Diff"]] = score_diff - score_change
     else:
         if server_wins_point:
-            x[7] = score_diff - score_change
+            x[idx["Score_Diff"]] = score_diff - score_change
         else:
-            x[7] = score_diff + score_change
-    x[7] = np.clip(x[7], -2.0, 2.0)
+            x[idx["Score_Diff"]] = score_diff + score_change
+    x[idx["Score_Diff"]] = np.clip(x[idx["Score_Diff"]], -2.0, 2.0)
     
     # Update SrvScr/RcvScr based on who served and won
     if server_wins_point:
         if server == 1:
-            x[9] += 1  # SrvScr
+            x[idx["SrvScr"]] += 1  # SrvScr
         # If server=2, P1 metrics don't change
     else:
         # Server lost
         if server == 2:
-            x[10] += 1  # RcvScr (P1 received and won)
+            x[idx["RcvScr"]] += 1  # RcvScr (P1 received and won)
         # If server=1 lost, P1 metrics don't improve
     
     return x
@@ -364,7 +376,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     prob_p2_lose_srv = np.zeros(n)
     
     # Get current features
-    X_current, _, _, _ = build_dataset(df_valid)
+    X_current, _, _, _, _ = build_dataset(df_valid)
     
     # Compute current probabilities
     for i in range(len(X_current)):
@@ -413,7 +425,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
         cf_df = add_additional_features(cf_df)
         cf_df = add_leverage_and_momentum(cf_df, alpha=alpha)
         
-        X_cf, _, mask_cf, _ = build_dataset(cf_df)
+        X_cf, _, mask_cf, _, _ = build_dataset(cf_df)
         
         # Find this point in the rebuilt dataset
         try:
@@ -489,7 +501,7 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
 
-    X, y, mask, sample_weights = build_dataset(df)
+    X, y, mask, sample_weights, _ = build_dataset(df)
     df_valid = df[mask].copy()
 
     model = load_model(model_path)

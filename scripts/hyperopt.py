@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold, cross_val_predict
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, cross_val_predict, KFold
 from sklearn.metrics import (
     roc_auc_score,
     accuracy_score,
@@ -69,8 +69,8 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
-    X, y, _, sample_weights = build_dataset(df)
-    print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
+    X, y_soft, _, sample_weights, y_hard = build_dataset(df)
+    print("[hyperopt] dataset shape:", X.shape, "positives (P1 wins, soft):", float(y_soft.sum()))
     print(f"[hyperopt] sample weights - mean: {sample_weights.mean():.2f}, max: {sample_weights.max():.2f}")
 
 
@@ -186,8 +186,9 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     # ------------------------------------------------------------------
     # For *every* model: 5-fold CV confusion matrix + ROC curve
     # ------------------------------------------------------------------
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    y_cm = 1 - y  # 0 = P1 wins, 1 = P2 wins
+    from sklearn.model_selection import KFold
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    y_cm = 1 - y_hard  # 0 = P1 wins, 1 = P2 wins
 
     all_params = search.cv_results_["params"]
     print("[hyperopt] Computing confusion matrix + ROC for all models...")
@@ -202,8 +203,14 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
         model_i.set_params(**params)
 
         # Cross-validated probabilities for "P1 wins" (class 1 in y)
+        # Use soft labels for training; KFold avoids stratification issues with soft labels
         y_proba_p1 = cross_val_predict(
-            model_i, X, y, cv=cv, method="predict_proba", fit_params={"sample_weight": sample_weights}
+            model_i,
+            X,
+            y_soft,
+            cv=cv,
+            method="predict_proba",
+            fit_params={"sample_weight": sample_weights},
         )[:, 1]
 
         # Flip to P2 probability + predictions for (0=P1,1=P2) convention
@@ -227,7 +234,7 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
         
         # Save each model to models/{search_type}/model_{idx}.json
         model_path = os.path.join(models_dir, f"model_{idx:03d}.json")
-        model_i.fit(X, y, sample_weight=sample_weights)
+        model_i.fit(X, y_soft, sample_weight=sample_weights)
         model_i.save_model(model_path)
 
         plot_confusion_matrix_and_roc(
