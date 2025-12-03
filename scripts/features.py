@@ -28,12 +28,16 @@ MATCH_FEATURE_COLUMNS = [
     "GameNo",
     "PointNumber",
     "point_importance",
+    "P1SetsWon",  # NEW: Number of sets won by P1
+    "P2SetsWon",  # NEW: Number of sets won by P2
     "SetsWonDiff",
     "SetsWonAdvantage",
     "SetWinProbPrior",
     "SetWinProbEdge",
     "SetWinProbLogit",
     "is_decider_tied",
+    "DistanceToMatchEnd",
+    "MatchFinished",
 ]
 
 # Point-level predictions reuse the exact same feature ordering.
@@ -191,6 +195,52 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         if pd.isna(p2_sets):
             p2_sets = 0
         set_diff = abs(p1_sets - p2_sets)
+        
+        # MATCH POINT DETECTION: Maximum importance (7.0)
+        # Check if either player is one point away from winning the match
+        is_match_point = False
+        match_point_player = 0
+        
+        # Best-of-5: need 3 sets to win
+        # Best-of-3: need 2 sets to win
+        # Determine format based on max sets played (if 5th set exists, it's best-of-5)
+        set_no = pd.to_numeric(row.get('SetNo', 1), errors='coerce')
+        if pd.isna(set_no):
+            set_no = 1
+        
+        # Check if player could win match by winning this point
+        if p1_sets == 2:  # P1 has won 2 sets
+            # In best-of-5: need 1 more set; in best-of-3: match point
+            if set_no <= 3:  # Best-of-3
+                if p1_games >= 5 and p1_games >= p2_games + 1:  # Could win set this game
+                    if (server == 1 and p1_score >= 3 and p1_score > p2_score) or \
+                       (server == 2 and p1_score >= 3 and p1_score > p2_score):
+                        is_match_point = True
+                        match_point_player = 1
+            elif p1_sets > p2_sets:  # In best-of-5, P1 leading in sets
+                if p1_games >= 5 and p1_games >= p2_games + 1:  # Could win set
+                    if (server == 1 and p1_score >= 3 and p1_score > p2_score) or \
+                       (server == 2 and p1_score >= 3 and p1_score > p2_score):
+                        is_match_point = True
+                        match_point_player = 1
+        
+        if p2_sets == 2:  # P2 has won 2 sets
+            if set_no <= 3:  # Best-of-3
+                if p2_games >= 5 and p2_games >= p1_games + 1:  # Could win set this game
+                    if (server == 1 and p2_score >= 3 and p2_score > p1_score) or \
+                       (server == 2 and p2_score >= 3 and p2_score > p1_score):
+                        is_match_point = True
+                        match_point_player = 2
+            elif p2_sets > p1_sets:  # In best-of-5, P2 leading in sets
+                if p2_games >= 5 and p2_games >= p1_games + 1:  # Could win set
+                    if (server == 1 and p2_score >= 3 and p2_score > p1_score) or \
+                       (server == 2 and p2_score >= 3 and p2_score > p1_score):
+                        is_match_point = True
+                        match_point_player = 2
+        
+        # Match point: maximum importance
+        if is_match_point:
+            return 7.0
         
         # Break point to win the set: receiver could win game AND set
         if is_set_point_situation:
@@ -514,6 +564,69 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
                     df.loc[tied_mask, col] * dampen_factor + 
                     df.loc[tied_mask, short_col] * (1 - dampen_factor)
                 )
+
+    # Add MatchFinished feature: 1 if match is over after this point, 0 otherwise
+    # This helps the model learn that when the match ends, probability should be 0 or 1
+    df['MatchFinished'] = 0.0
+    
+    # Get the last point index for each match
+    last_point_idx = df.groupby(MATCH_COL).tail(1).index
+    df.loc[last_point_idx, 'MatchFinished'] = 1.0
+    
+    # Add DistanceToMatchEnd: non-linear feature that increases as match nears completion
+    # This helps the model understand urgency and criticality of late-match points
+    # Formula: based on sets won and games won, with exponential scaling
+    
+    # Calculate how close each player is to winning the match
+    # For best-of-5: need 3 sets (or 2 sets if leading decisively)
+    # For best-of-3: need 2 sets
+    
+    # Determine match format (best-of-3 or best-of-5) based on SetNo
+    max_set = df.groupby(MATCH_COL)['SetNo_original'].transform('max') if 'SetNo_original' in df.columns else 3
+    is_best_of_5 = max_set >= 4
+    
+    # Calculate sets needed to win
+    sets_to_win = 3.0  # default best-of-5
+    if not isinstance(is_best_of_5, (int, float, bool)):
+        # It's a series, apply conditional
+        sets_to_win = is_best_of_5.apply(lambda x: 3.0 if x else 2.0)
+    elif not is_best_of_5:
+        sets_to_win = 2.0
+    
+    # Calculate proximity to match end for each player
+    # Higher value = closer to winning
+    p1_sets = df['P1SetsWon'] if 'P1SetsWon' in df.columns else 0
+    p2_sets = df['P2SetsWon'] if 'P2SetsWon' in df.columns else 0
+    p1_games = pd.to_numeric(df['P1GamesWon'], errors='coerce').fillna(0)
+    p2_games = pd.to_numeric(df['P2GamesWon'], errors='coerce').fillna(0)
+    
+    # Normalize sets won to [0, 1] based on how many needed
+    if isinstance(sets_to_win, (int, float)):
+        p1_set_progress = p1_sets / sets_to_win
+        p2_set_progress = p2_sets / sets_to_win
+    else:
+        p1_set_progress = p1_sets / sets_to_win
+        p2_set_progress = p2_sets / sets_to_win
+    
+    # Normalize games won to [0, 1] (need 6 games to win set, or 7 in tiebreak)
+    p1_game_progress = np.minimum(p1_games / 6.0, 1.0)
+    p2_game_progress = np.minimum(p2_games / 6.0, 1.0)
+    
+    # Combined progress: weighted sum of set and game progress
+    # Sets are much more important than games
+    p1_progress = 0.8 * p1_set_progress + 0.2 * p1_game_progress
+    p2_progress = 0.8 * p2_set_progress + 0.2 * p2_game_progress
+    
+    # Maximum progress (whoever is closer to winning)
+    max_progress = np.maximum(p1_progress, p2_progress)
+    
+    # Apply non-linear transformation: exponential increase near the end
+    # Use x^3 to make it increase sharply as match nears completion
+    # Scale to [0, 10] range for better model interpretation
+    df['DistanceToMatchEnd'] = np.power(max_progress, 3.0) * 10.0
+    
+    # Clip to reasonable range
+    df['DistanceToMatchEnd'] = df['DistanceToMatchEnd'].clip(0.0, 10.0)
 
     # Normalize coarse progress indicators within each match to reduce raw-score dominance
     # Save original SetNo before normalization (needed for filtering/analysis)

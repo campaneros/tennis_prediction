@@ -4,8 +4,6 @@ from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 
-from .data_loader import load_points_multiple, WINDOW
-
 from .data_loader import load_points_multiple
 from .features import (
     add_match_labels,
@@ -31,7 +29,7 @@ def _default_model():
     )
 
 
-def train_model(file_paths, model_out: str, config_path=None):
+def train_model(file_paths, model_out, config_path=None):
     """
     Train the XGBoost model on one or more CSV files and save it to 'model_out'.
 
@@ -49,9 +47,18 @@ def train_model(file_paths, model_out: str, config_path=None):
 
     df = load_points_multiple(file_paths)
     
+    # Filter out rows with missing match_id
+    df = df.dropna(subset=['match_id'])
+    
     # Filter out women's matches (match_id >= 2000) - they are best-of-3, not best-of-5
     # This ensures model learns from men's tennis where 5-set matches are possible
-    df['match_num'] = df['match_id'].str.extract(r'-(\d+)$')[0].astype(int)
+    extracted = df['match_id'].str.extract(r'-(\d+)$')[0]
+    # Drop rows where extraction failed (NaN)
+    valid_mask = extracted.notna()
+    df = df[valid_mask].copy()
+    extracted = extracted[valid_mask]
+    df['match_num'] = extracted.astype(int)
+    
     original_count = len(df)
     df = df[df['match_num'] < 2000].copy()
     

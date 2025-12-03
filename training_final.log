@@ -1,0 +1,13 @@
+/Users/mcampana/Documents/Tesi_Mik/tennis_prediction/scripts/data_loader.py:26: DtypeWarning: Columns (14) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(path)
+[train] Filtered 723257 points total:
+[train]   - Women's matches (best-of-3): 711499
+[train]   - Match 1701 (test set): 11758
+[train] Training on 1154467 points from men's matches
+[train] dataset shape: (1148897, 26) positives (P1 wins): 476809
+[train] long_window=20, short_window=5, alpha=0.35
+[train] weight exponent: 0.5
+[train] sample weights - mean: 1.94, max: 7.48
+[train] Test accuracy: 0.850
+[train] Test ROC AUC:  0.946
+[train] Model saved to: models/xgb_final.json

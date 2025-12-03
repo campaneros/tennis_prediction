@@ -225,6 +225,45 @@ tennisctl predict \
   --plot-dir plots
 ```
 
+### Understanding the Probability Curves
+
+The prediction generates four probability curves showing current state and counterfactual scenarios:
+
+1. **P1 wins match (current)** [Blue solid line]
+   - Probability that Player 1 wins the match given the current game state
+   - P1 and P2 are fixed identities throughout the entire match
+
+2. **P2 wins match (current)** [Orange solid line]
+   - Probability that Player 2 wins = 1 - P(P1 wins)
+   - Always sums to 1.0 with the P1 probability
+
+3. **P1 wins | if P1 loses current point** [Green dashed line]
+   - **Counterfactual scenario**: What if P1 loses this specific point?
+   - Shows how P1's win probability would change if P1 fails to win this point
+   - Applies whether P1 is serving (would lose serve point) or receiving (would fail to win return point)
+
+4. **P2 wins | if P2 loses current point** [Red dashed line]
+   - **Counterfactual scenario**: What if P2 loses this specific point?
+   - Shows how P2's win probability would change if P2 fails to win this point
+   - Applies whether P2 is serving (would lose serve point) or receiving (would fail to win return point)
+
+**Example: P2 has match point while serving (point index ~400)**
+- **Current state**: P2 probability is very high (~0.95) [orange solid line]
+- **If P2 loses this point**: P2 probability drops dramatically [red dashed line drops sharply]
+- **Large gap** between solid orange and dashed red = extremely critical point for P2
+- This visualizes how losing a match point devastates P2's chances
+
+**Example: P1 is serving at 40-0 (game point)**
+- **Current state**: P1 probability relatively high
+- **If P1 loses this point**: P1 probability drops slightly [green dashed line drops a bit]
+- **Small gap** = point is important but not catastrophic (P1 would still have 40-15)
+
+**Key Insight - Point Importance Visualization**: 
+- **Large gap between solid and dashed lines** → Critical point for that player
+- **Small gap** → Less critical point
+- The counterfactuals show **player-specific risk**, not just server risk
+- At match point for P2: red dashed line plummets, green dashed line soars (P1 benefits from P2's loss)
+
 
 
 
