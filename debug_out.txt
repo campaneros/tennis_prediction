@@ -1,0 +1,21 @@
+
+=== COUNTERFACTUAL: Point Importance Scaling ===
+[counterfactual-importance] Mean change: P1=0.0422, P2=0.0422
+[counterfactual-importance] Max change: P1=0.9749, P2=0.9749
+[counterfactual-importance] Points with >10% change: P1=4946, P2=4946
+
+=== ADDITIONAL MODE: SEMI-REALISTIC ===
+[semi-realistic] Simulating 66/423 points with importance > 3.5
+Traceback (most recent call last):
+  File "/Users/mcampana/Documents/Tesi_Mik/tennis_prediction/tennisctl.py", line 4, in <module>
+    main()
+  File "/Users/mcampana/Documents/Tesi_Mik/tennis_prediction/scripts/cli.py", line 84, in main
+    run_prediction(args.files, args.model, args.match_id, args.plot_dir, 
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mcampana/Documents/Tesi_Mik/tennis_prediction/scripts/prediction.py", line 786, in run_prediction
+    prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2 = compute_counterfactual_point_by_point(
+                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mcampana/Documents/Tesi_Mik/tennis_prediction/scripts/prediction.py", line 658, in compute_counterfactual_point_by_point
+    point_imp = importances[i] if i < len(importances) else 0.0
+                                          ^^^^^^^^^^^
+NameError: name 'importances' is not defined

@@ -137,18 +137,18 @@ def plot_match_probabilities(df_valid: pd.DataFrame, match_id_to_plot: str, plot
 
     plt.plot(
         x, dfm["prob_p1_lose_srv"],
-        "--", label="P1 wins | server loses point", linewidth=1.5,
+        "--", label="P1 wins | previous point opposite", linewidth=1.5,
     )
     plt.plot(
         x, dfm["prob_p2_lose_srv"],
-        "--", label="P2 wins | server loses point", linewidth=1.5,
+        "--", label="P2 wins | previous point opposite", linewidth=1.5,
     )
 
     interactive_traces = [
         {"x": x, "y": dfm["prob_p1"], "name": "P1 wins match (current)", "color": "blue"},
         {"x": x, "y": dfm["prob_p2"], "name": "P2 wins match (current)", "color": "orange"},
-        {"x": x, "y": dfm["prob_p1_lose_srv"], "name": "P1 wins | server loses point", "color": "green", "dash": "dash"},
-        {"x": x, "y": dfm["prob_p2_lose_srv"], "name": "P2 wins | server loses point", "color": "red", "dash": "dash"},
+        {"x": x, "y": dfm["prob_p1_lose_srv"], "name": "P1 wins | previous point opposite", "color": "green", "dash": "dash"},
+        {"x": x, "y": dfm["prob_p2_lose_srv"], "name": "P2 wins | previous point opposite", "color": "red", "dash": "dash"},
     ]
     vertical_lines = []
 
@@ -585,9 +585,9 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
     
     ax1.plot(x, dfm["prob_p1"], label="P1 wins match (current)", linewidth=2, color='blue')
     ax1.plot(x, dfm["prob_p2"], label="P2 wins match (current)", linewidth=2, color='orange')
-    ax1.plot(x, dfm["prob_p1_lose_srv"], "--", label="P1 wins | server loses (importance)", 
+    ax1.plot(x, dfm["prob_p1_lose_srv"], "--", label="P1 wins | P1 loses point (importance)", 
              linewidth=1.5, color='green')
-    ax1.plot(x, dfm["prob_p2_lose_srv"], "--", label="P2 wins | server loses (importance)", 
+    ax1.plot(x, dfm["prob_p2_lose_srv"], "--", label="P2 wins | P2 loses point (importance)", 
              linewidth=1.5, color='red')
     
     # Add critical points markers
@@ -625,8 +625,8 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
     traces1 = [
         {"x": x, "y": dfm["prob_p1"], "name": "P1 wins match (current)", "color": "blue"},
         {"x": x, "y": dfm["prob_p2"], "name": "P2 wins match (current)", "color": "orange"},
-        {"x": x, "y": dfm["prob_p1_lose_srv"], "name": "P1 wins | server loses (importance)", "color": "green", "dash": "dash"},
-        {"x": x, "y": dfm["prob_p2_lose_srv"], "name": "P2 wins | server loses (importance)", "color": "red", "dash": "dash"},
+        {"x": x, "y": dfm["prob_p1_lose_srv"], "name": "P1 wins | P1 loses point (importance)", "color": "green", "dash": "dash"},
+        {"x": x, "y": dfm["prob_p2_lose_srv"], "name": "P2 wins | P2 loses point (importance)", "color": "red", "dash": "dash"},
     ]
     html1 = os.path.join(plot_dir, f"match_{match_id_to_plot}_importance.html")
     _save_interactive_plot(traces1, vertical_lines1, f"Match probabilities (importance) - {match_id_to_plot}", html1)
