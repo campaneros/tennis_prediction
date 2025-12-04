@@ -15,6 +15,13 @@ from .model import load_model
 from .plotting import plot_match_probabilities
 
 
+def _predict_p1_proba(model, x_vec):
+    """Return P1 win probability for classifier or regressor models."""
+    if hasattr(model, "predict_proba"):
+        return float(model.predict_proba(x_vec.reshape(1, -1))[:, 1])
+    return float(model.predict(x_vec.reshape(1, -1)))
+
+
 def simulate_score_after_point_loss(row, server_wins: bool):
     """
     Simulate what the actual tennis score would be if the server wins/loses the point.
@@ -432,20 +439,10 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
 
 def compute_counterfactual_with_importance(X, model, point_importances, X_prev=None, point_winners=None):
     """
-    Fast counterfactual using point_importance to scale feature changes.
-    
-    For each point i (AFTER it has been played):
-    - Shows current state probabilities
-    - Shows what probabilities would be if point i had opposite outcome
-    
-    This answers: "At this moment, what if the point that just happened went the other way?"
-    
-    Args:
-        X: Feature matrix at current state (after each point)
-        model: Trained model
-        point_importances: Array of importance values for each point
-        X_prev: Feature matrix at previous state (before each point). If None, uses X shifted.
-        point_winners: Array of point winners (1 or 2). If provided, used to determine outcome.
+    Fast alternative probability: for each point, estimate the current win prob
+    and the win prob if the PLAYER WHO ACTUALLY WON THE POINT had lost it.
+    Uses only information up to that point (state before the point, plus flipped
+    outcome) with a lightweight feature update.
     """
     n = X.shape[0]
     prob_p1 = np.zeros(n)
@@ -459,59 +456,33 @@ def compute_counterfactual_with_importance(X, model, point_importances, X_prev=N
         x_current = X[i]
         importance_current = point_importances[i] if i < len(point_importances) else 1.0
         
-        # Current probabilities (after point i was played)
-        p1_now = float(model.predict_proba(x_current.reshape(1, -1))[:, 1])
+        # Current probability (state built from all points up to this one)
+        p1_now = _predict_p1_proba(model, x_current)
         prob_p1[i] = p1_now
         prob_p2[i] = 1.0 - p1_now
 
-        if i == 0:
-            # First point: no previous state to work with
+        if point_winners is None or i == 0:
             prob_p1_counterfactual[i] = p1_now
             prob_p2_counterfactual[i] = 1.0 - p1_now
             continue
-        
-        # Get state BEFORE point i was played
-        x_before = X_prev[i-1] if X_prev is not None else X[i-1]
+
+        # State BEFORE point i (after point i-1)
+        x_before = X_prev[i - 1] if X_prev is not None else X[i - 1]
         server_at_i = int(x_before[idx[SERVER_COL]])
-        
-        # Determine who won point i
-        if point_winners is not None and i < len(point_winners):
-            # Use explicit point winner information
-            point_winner_i = int(point_winners[i])
-        else:
-            # Infer from feature changes
-            # SrvScr tracks P1's serve points won, RcvScr tracks P1's return points won
-            srv_scr_now = x_current[idx["SrvScr"]]
-            rcv_scr_now = x_current[idx["RcvScr"]]
-            srv_scr_before = x_before[idx["SrvScr"]]
-            rcv_scr_before = x_before[idx["RcvScr"]]
-            
-            # If SrvScr or RcvScr increased, P1 won the point
-            if (srv_scr_now > srv_scr_before) or (rcv_scr_now > rcv_scr_before):
-                point_winner_i = 1
-            else:
-                point_winner_i = 2
-        
-        # Counterfactual: INVERT who won the point
-        # If P1 won → counterfactual: P2 wins
-        # If P2 won → counterfactual: P1 wins
-        counterfactual_winner = 2 if point_winner_i == 1 else 1
-        
-        # Translate to server_wins_point for simulation
-        # If counterfactual winner == server → server wins
-        # If counterfactual winner != server → server loses
-        server_wins_in_cf = (counterfactual_winner == server_at_i)
-        
+
+        actual_winner = int(point_winners[i])
+        counterfactual_winner = 2 if actual_winner == 1 else 1
+        server_wins_cf = (counterfactual_winner == server_at_i)
+
         x_counter = advance_game_state_simple(
-            x_before, 
-            server_wins_point=server_wins_in_cf, 
+            x_before,
+            server_wins_point=server_wins_cf,
             point_importance=importance_current
         )
-        
-        # Get probabilities in counterfactual scenario
-        p1_counter = float(model.predict_proba(x_counter.reshape(1, -1))[:, 1])
-        prob_p1_counterfactual[i] = p1_counter
-        prob_p2_counterfactual[i] = 1.0 - p1_counter
+
+        p1_cf = _predict_p1_proba(model, x_counter)
+        prob_p1_counterfactual[i] = p1_cf
+        prob_p2_counterfactual[i] = 1.0 - p1_cf
 
     # Statistics
     diffs_p1 = np.abs(prob_p1 - prob_p1_counterfactual)
@@ -534,7 +505,9 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     3. Simulate the OPPOSITE outcome
     4. Rebuild features and get model prediction
     
-    This shows: "What if point i had gone the opposite way?"
+    Modes:
+      - realistic: rebuild entire match with flipped point
+      - semi-realistic: rebuild ONLY the prefix up to that point (no future info), with the point flipped
     
     Args:
         df_valid: DataFrame with all features computed
@@ -573,7 +546,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     
     # Compute current probabilities
     for i in range(len(X_current)):
-        p1_now = float(model.predict_proba(X_current[i].reshape(1, -1))[:, 1])
+        p1_now = _predict_p1_proba(model, X_current[i])
         prob_p1[i] = p1_now
         prob_p2[i] = 1.0 - p1_now
     
@@ -591,6 +564,17 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
         n_simulate = n
         print(f"[{mode}] Simulating all {n_simulate} points")
     
+    # Precompute per-match max values to preserve match format and normalization
+    set_no_full_max = None
+    game_no_full_max = None
+    point_no_full_max = None
+    if 'SetNo' in df_raw_with_labels.columns:
+        set_no_full_max = df_raw_with_labels.groupby(MATCH_COL)['SetNo'].transform('max')
+    if 'GameNo' in df_raw_with_labels.columns:
+        game_no_full_max = df_raw_with_labels.groupby(MATCH_COL)['GameNo'].transform('max')
+    if 'PointNumber' in df_raw_with_labels.columns:
+        point_no_full_max = df_raw_with_labels.groupby(MATCH_COL)['PointNumber'].transform('max')
+
     # Process each point that needs simulation
     simulated_count = 0
     indices = list(df_valid.index)
@@ -608,8 +592,14 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
             prob_p2_counterfactual[i] = prob_p2[i]
             continue
         
-        # Create a FRESH copy of the raw dataset
-        cf_df = df_raw_with_labels.copy()
+        # Always remove future points so the counterfactual uses only past+current info
+        cf_df = df_raw_with_labels.loc[:idx].copy()
+        if set_no_full_max is not None:
+            cf_df['SetNo_full_max'] = set_no_full_max.loc[cf_df.index].values
+        if game_no_full_max is not None:
+            cf_df['GameNo_full_max'] = game_no_full_max.loc[cf_df.index].values
+        if point_no_full_max is not None:
+            cf_df['PointNumber_full_max'] = point_no_full_max.loc[cf_df.index].values
         
         # Get current row to determine actual winner
         current_row = df_raw_with_labels.loc[idx]
@@ -625,75 +615,74 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
         
         # Recalculate ALL scores, games, sets from the beginning based on modified PointWinner
         cf_df = recalculate_match_state_from_point_winners(cf_df)
-        
-        # Check if the counterfactual would have ended the match at THIS point
-        cf_row = cf_df.loc[idx]
-        
-        # Count total sets won by each player up to this point
-        # IMPORTANT: Only look at points UP TO idx in the ORIGINAL match sequence
-        # Get the SetNo of the current point
-        current_set_no = int(cf_row.get('SetNo', 1))
-        
-        # Count sets won up to the CURRENT set number (not beyond)
+
+        # Determine if the flipped outcome would end the match; otherwise avoid marking MatchFinished.
+        if "SetNo_full_max" in cf_df.columns:
+            sets_needed = 3 if float(cf_df["SetNo_full_max"].max()) >= 4 else 2
+        else:
+            sets_needed = 3
+        current_set_no = int(cf_df.at[idx, "SetNo"]) if "SetNo" in cf_df else 1
         sets_p1 = 0
         sets_p2 = 0
-        
-        # Only check sets 1 through current_set_no
+
         for set_num in range(1, current_set_no + 1):
-            # Get all points in this set up to current point
-            set_points = cf_df[(cf_df['SetNo'] == set_num) & (cf_df.index <= idx)]
-            if len(set_points) > 0:
-                # Get the last point - if SetWinner is non-zero, the set is complete
-                last_point = set_points.iloc[-1]
-                set_winner = last_point.get('SetWinner', 0)
-                if set_winner == 0:
-                    # Set not yet complete - still in progress
-                    continue
-                set_winner = int(set_winner)
-                if set_winner == 1:
-                    sets_p1 += 1
-                elif set_winner == 2:
-                    sets_p2 += 1
+            set_points = cf_df[(cf_df["SetNo"] == set_num) & (cf_df.index <= idx)]
+            if len(set_points) == 0:
+                continue
+            last_point = set_points.iloc[-1]
+            set_winner = int(last_point.get("SetWinner", 0))
+            if set_winner == 1:
+                sets_p1 += 1
+            elif set_winner == 2:
+                sets_p2 += 1
+
+        match_ended = (sets_p1 >= sets_needed) or (sets_p2 >= sets_needed)
+
+        # Rebuild ALL features from this modified dataset using the counterfactual outcome.
+        # This recalculates momentum, serve statistics, etc. based on the new scores/games.
+        cf_df = add_rolling_serve_return_features(cf_df, long_window=long_window, short_window=short_window)
+        cf_df = add_additional_features(cf_df)
+        cf_df = add_leverage_and_momentum(cf_df, alpha=alpha)
+
+        # If match did NOT end after flipping, ensure MatchFinished stays 0 so the model
+        # does not treat this point as terminal.
+        if not match_ended and 'MatchFinished' in cf_df.columns:
+            cf_df['MatchFinished'] = 0.0
         
-        # Check if match would be over (best-of-5: need 3 sets, best-of-3: need 2 sets)
-        match_ended = False
-        match_winner = 0
+        X_cf, _, mask_cf, _, _ = build_dataset(cf_df)
         
-        # Assume best-of-5 (Grand Slam men's)
-        if sets_p1 >= 3:
-            match_ended = True
-            match_winner = 1
-        elif sets_p2 >= 3:
-            match_ended = True
-            match_winner = 2
-        
-        if match_ended:
-            # Match is over! Set probability directly
-            if match_winner == 1:
-                prob_p1_counterfactual[i] = 1.0
-                prob_p2_counterfactual[i] = 0.0
-            else:
-                prob_p1_counterfactual[i] = 0.0
-                prob_p2_counterfactual[i] = 1.0
+        # Map the flipped point to the correct position in X_cf (which is mask-compacted)
+        target_pos = None
+        if idx in cf_df.index:
+            try:
+                target_pos = cf_df.index.get_loc(idx)
+            except KeyError:
+                target_pos = None
+        if target_pos is None:
+            target_pos = len(cf_df) - 1  # fallback to last row
+
+        valid_positions = np.flatnonzero(mask_cf)
+        x_pos = None
+        if target_pos < len(mask_cf) and mask_cf[target_pos]:
+            # Exact mapping exists; locate its position in the compacted array
+            match = np.where(valid_positions == target_pos)[0]
+            if len(match) > 0:
+                x_pos = int(match[0])
+        if x_pos is None:
+            # Fallback: use the last valid position at or before target_pos, else the last valid overall
+            before = valid_positions[valid_positions <= target_pos]
+            if len(before) > 0:
+                x_pos = int(np.where(valid_positions == before[-1])[0][0])
+            elif len(valid_positions) > 0:
+                x_pos = int(len(valid_positions) - 1)
+
+        if x_pos is not None and x_pos < len(X_cf):
+            p1_cf = _predict_p1_proba(model, X_cf[x_pos])
         else:
-            # Match continues: rebuild features and predict
-            # Rebuild ALL features from this modified dataset
-            # This will recalculate momentum, serve statistics, etc. based on the new scores/games
-            cf_df = add_rolling_serve_return_features(cf_df, long_window=long_window, short_window=short_window)
-            cf_df = add_additional_features(cf_df)
-            cf_df = add_leverage_and_momentum(cf_df, alpha=alpha)
-            
-            X_cf, _, mask_cf, _, _ = build_dataset(cf_df)
-            
-            # The modified point is at position i in the rebuilt array
-            if i < len(X_cf) and mask_cf[i]:
-                p1_cf = float(model.predict_proba(X_cf[i].reshape(1, -1))[:, 1])
-                prob_p1_counterfactual[i] = p1_cf
-                prob_p2_counterfactual[i] = 1.0 - p1_cf
-            else:
-                # Fallback
-                prob_p1_counterfactual[i] = prob_p1[i]
-                prob_p2_counterfactual[i] = prob_p2[i]
+            p1_cf = prob_p1[i]
+
+        prob_p1_counterfactual[i] = p1_cf
+        prob_p2_counterfactual[i] = 1.0 - p1_cf
         
         simulated_count += 1
         if simulated_count % 50 == 0:
@@ -709,7 +698,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
         if len(simulated_diffs) > 0:
             print(f"[{mode}] Simulated points >10% change: {np.sum(simulated_diffs > 0.10)}/{n_simulate}")
 
-    return prob_p1, prob_p2, prob_p1_counterfactual, prob_p2_counterfactual
+    return prob_p1, prob_p2, prob_p1_counterfactual, prob_p2_counterfactual, simulate_mask
 
 
 
@@ -760,16 +749,18 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
 
     # ALWAYS compute importance-based counterfactual (fast)
     print("\n=== COUNTERFACTUAL: Point Importance Scaling ===")
-    # Extract point winners from raw data for accurate counterfactual simulation
     point_winners = df_valid['PointWinner'].values if 'PointWinner' in df_valid.columns else None
+    point_importances = df_valid['point_importance'].values if 'point_importance' in df_valid.columns else np.ones(len(df_valid))
     prob_p1, prob_p2, prob_p1_lose, prob_p2_lose = compute_counterfactual_with_importance(
-        X, model, sample_weights, X_prev=None, point_winners=point_winners
+        X, model, point_importances, X_prev=None, point_winners=point_winners
     )
 
     df_valid["prob_p1"] = prob_p1
     df_valid["prob_p2"] = prob_p2
-    df_valid["prob_p1_lose_srv"] = prob_p1_lose  # Actually: prob if P1 loses this point
-    df_valid["prob_p2_lose_srv"] = prob_p2_lose  # Actually: prob if P2 loses this point
+    df_valid["counterfactual_computed"] = True
+    # Counterfactual: probability if the actual point winner had lost that point
+    df_valid["prob_p1_lose_srv"] = prob_p1_lose
+    df_valid["prob_p2_lose_srv"] = prob_p2_lose
 
     # Filter to match for additional simulations
     match_id_str = str(match_id)
@@ -782,14 +773,14 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
         
         if counterfactual_mode == "semi-realistic":
             # Only critical points in this match
-            threshold = 3.0  # Lower threshold to include more match points
-            prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2 = compute_counterfactual_point_by_point(
+            threshold = 3.5  # Lower threshold to include more match points
+            prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2, simulate_mask = compute_counterfactual_point_by_point(
                 match_df, df_raw_with_labels, model, config_path,
                 match_id=match_id_str, importance_threshold=threshold, mode="semi-realistic"
             )
         else:  # realistic
             # ALL points in this match
-            prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2 = compute_counterfactual_point_by_point(
+            prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2, simulate_mask = compute_counterfactual_point_by_point(
                 match_df, df_raw_with_labels, model, config_path,
                 match_id=match_id_str, importance_threshold=None, mode="realistic"
             )
@@ -800,10 +791,24 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
         match_df["prob_p2_alt"] = prob_p2_2
         match_df["prob_p1_lose_alt"] = prob_p1_lose_2
         match_df["prob_p2_lose_alt"] = prob_p2_lose_2
+        match_df["counterfactual_computed"] = simulate_mask
         
         # Update df_valid with match results
-        for col in ["prob_p1_alt", "prob_p2_alt", "prob_p1_lose_alt", "prob_p2_lose_alt"]:
+        for col in ["prob_p1_alt", "prob_p2_alt", "prob_p1_lose_alt", "prob_p2_lose_alt", "counterfactual_computed"]:
             df_valid.loc[match_df.index, col] = match_df[col]
+    else:
+        # Ensure columns exist for consistent CSV even if no alt computation
+        match_df = match_df.copy()
+        if "prob_p1_alt" not in match_df.columns:
+            match_df["prob_p1_alt"] = match_df["prob_p1"]
+        if "prob_p2_alt" not in match_df.columns:
+            match_df["prob_p2_alt"] = match_df["prob_p2"]
+        if "prob_p1_lose_alt" not in match_df.columns:
+            match_df["prob_p1_lose_alt"] = match_df["prob_p1_lose_srv"]
+        if "prob_p2_lose_alt" not in match_df.columns:
+            match_df["prob_p2_lose_alt"] = match_df["prob_p2_lose_srv"]
+        if "counterfactual_computed" not in match_df.columns:
+            match_df["counterfactual_computed"] = True
     
     # Save probabilities to CSV AFTER all computations
     # Add suffix based on counterfactual mode
@@ -811,13 +816,21 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     probs_file = os.path.join(plot_dir, f"match_{match_id_str}_probabilities{mode_suffix}.csv")
     if not match_df.empty:
         # Save essential columns for plotting
-        cols_to_save = [MATCH_COL, 'prob_p1', 'prob_p2', 'prob_p1_lose_srv', 'prob_p2_lose_srv']
-        if 'point_importance' in match_df.columns:
-            cols_to_save.append('point_importance')
-        # If we have semi-realistic/realistic alternative probabilities, save them too
-        for col in ["prob_p1_alt", "prob_p2_alt", "prob_p1_lose_alt", "prob_p2_lose_alt"]:
-            if col in match_df.columns:
-                cols_to_save.append(col)
+        cols_to_save = [
+            MATCH_COL,
+            'prob_p1',
+            'prob_p2',
+            'prob_p1_lose_srv',
+            'prob_p2_lose_srv',
+            'point_importance' if 'point_importance' in match_df.columns else None,
+            'counterfactual_computed' if 'counterfactual_computed' in match_df.columns else None,
+            'prob_p1_alt',
+            'prob_p2_alt',
+            'prob_p1_lose_alt',
+            'prob_p2_lose_alt',
+        ]
+        # Drop Nones and keep unique order
+        cols_to_save = [c for c in cols_to_save if c is not None]
         match_df[cols_to_save].to_csv(probs_file, index=False)
         print(f"[prediction] Saved probabilities to: {probs_file}")
     
