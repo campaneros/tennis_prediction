@@ -582,7 +582,10 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     # For best-of-3: need 2 sets
     
     # Determine match format (best-of-3 or best-of-5) based on SetNo
-    max_set = df.groupby(MATCH_COL)['SetNo_original'].transform('max') if 'SetNo_original' in df.columns else 3
+    if 'SetNo_full_max' in df.columns:
+        max_set = df['SetNo_full_max']
+    else:
+        max_set = df.groupby(MATCH_COL)['SetNo_original'].transform('max') if 'SetNo_original' in df.columns else 3
     is_best_of_5 = max_set >= 4
     
     # Calculate sets needed to win
@@ -636,7 +639,11 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
     for col in ['GameNo', 'PointNumber', 'SetNo']:
         if col in df.columns:
             numeric = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-            max_per_match = numeric.groupby(match_groups).transform('max').replace(0, 1)
+            override_max = df.get(f"{col}_full_max")
+            if override_max is not None:
+                max_per_match = pd.to_numeric(override_max, errors='coerce').fillna(0.0).replace(0, 1)
+            else:
+                max_per_match = numeric.groupby(match_groups).transform('max').replace(0, 1)
             df[col] = (numeric / max_per_match).clip(0.0, 1.0)
 
     return df
@@ -828,6 +835,89 @@ def build_dataset(df: pd.DataFrame):
     df = df.copy()
     feature_cols = MATCH_FEATURE_COLUMNS.copy()
 
+    # Determine sets required to win for each match (best-of-3 vs best-of-5)
+    # Defaults to best-of-5 (3 sets) if original set count is unavailable.
+    sets_to_win_series = pd.Series(3.0, index=df.index)
+    if 'SetNo_full_max' in df.columns:
+        max_set_per_match = df['SetNo_full_max']
+        sets_to_win_series = pd.Series(np.where(max_set_per_match >= 4, 3.0, 2.0), index=df.index)
+    elif 'SetNo_original' in df.columns:
+        max_set_per_match = df.groupby(MATCH_COL)['SetNo_original'].transform('max')
+        sets_to_win_series = pd.Series(np.where(max_set_per_match >= 4, 3.0, 2.0), index=df.index)
+
+    def _clamp(val: float, lo: float, hi: float) -> float:
+        return float(np.minimum(np.maximum(val, lo), hi))
+
+    def _set_state_anchor(row, sets_needed: float) -> float:
+        """
+        Heuristic prior for P1 match win tied to set state.
+        Encodes domain knowledge:
+          - Tied sets (except final decider) → stay ~0.50
+          - +1/-1 set → cap near 0.70/0.30
+          - 2-2 (or 1-1 in best-of-3) can drift slightly with game edge
+        """
+        p1_sets = float(row.get('P1SetsWon', 0.0))
+        p2_sets = float(row.get('P2SetsWon', 0.0))
+        set_diff = p1_sets - p2_sets
+        sets_played = p1_sets + p2_sets
+        games_edge = float(row.get('CurrentSetGamesDiff', 0.0))
+
+        in_decider_tied = (set_diff == 0) and (sets_played >= sets_needed - 1.0)
+
+        if set_diff == 0:
+            if in_decider_tied:
+                # Allow small drift based on current-set games but stay near coin flip
+                anchor = 0.5 + np.tanh(games_edge / 3.0) * 0.12
+                return _clamp(anchor, 0.40, 0.60)
+            return 0.50
+
+        if set_diff == 1:
+            anchor = 0.65 + np.tanh(games_edge / 4.0) * 0.03
+            return _clamp(anchor, 0.30, 0.70)  # enforce <=0.70 with single-set lead
+
+        if set_diff == -1:
+            anchor = 0.35 - np.tanh(games_edge / 4.0) * 0.03
+            return _clamp(anchor, 0.30, 0.70)
+
+        if set_diff >= 2:
+            # Match nearly over in favor of P1
+            return 0.90
+
+        # set_diff <= -2: P1 in deep trouble
+        return 0.10
+
+    def _anchor_strength(row, sets_needed: float) -> float:
+        """
+        How strongly to blend toward the set-based anchor.
+        Early in match → strong; near finish → weaker.
+        """
+        p1_sets = float(row.get('P1SetsWon', 0.0))
+        p2_sets = float(row.get('P2SetsWon', 0.0))
+        set_diff = abs(p1_sets - p2_sets)
+        sets_played = p1_sets + p2_sets
+        distance = float(row.get('DistanceToMatchEnd', 0.0)) if 'DistanceToMatchEnd' in row else 0.0
+        in_decider_tied = (set_diff == 0) and (sets_played >= sets_needed - 1.0)
+
+        # Base strength by set situation
+        if set_diff == 0:
+            base = 0.80
+        elif set_diff == 1:
+            base = 0.70
+        else:
+            base = 0.50
+
+        if in_decider_tied:
+            base = min(base, 0.45)  # allow more flexibility in final-set ties
+
+        # Fade anchor as we near the end of the match
+        progress = _clamp(distance / 10.0, 0.0, 1.0)
+        strength = base * (1.0 - 0.6 * progress)
+
+        if 'MatchFinished' in row and float(row.get('MatchFinished', 0.0)) == 1.0:
+            strength = 0.0
+
+        return _clamp(strength, 0.0, 0.85)
+
     # Ensure all feature columns are numeric
     for col in feature_cols:
         if col in df.columns:
@@ -837,6 +927,17 @@ def build_dataset(df: pd.DataFrame):
 
     # Hard labels (0/1)
     y_hard = df["p1_wins_match"].values.astype(float)
+
+    # Soft labels blend hard outcome with set-based anchor so the model learns
+    # desired probability shapes directly (rather than post-hoc guardrails).
+    y_soft_list = []
+    for idx, row in df.iterrows():
+        sets_needed = sets_to_win_series.at[idx] if isinstance(sets_to_win_series, pd.Series) else 3.0
+        anchor = _set_state_anchor(row, sets_needed)
+        strength = _anchor_strength(row, sets_needed)
+        blended = float(row["p1_wins_match"]) * (1.0 - strength) + anchor * strength
+        y_soft_list.append(blended)
+    y_soft = np.array(y_soft_list, dtype=float)
     
     # Extract point importance for sample weighting
     if 'point_importance' in df.columns:
@@ -869,11 +970,12 @@ def build_dataset(df: pd.DataFrame):
 
     mask = ~np.isnan(X_all).any(axis=1)
     X = X_all[mask]
+    y_soft_masked = y_soft[mask]
     y_hard_masked = y_hard[mask]
     sample_weights = weights_all[mask]
 
-    # Return only hard labels and weights (soft labels removed)
-    return X, None, mask, sample_weights, y_hard_masked
+    # Return both soft labels (for training) and hard labels (for evaluation)
+    return X, y_soft_masked, mask, sample_weights, y_hard_masked
 
 
 def build_dataset_point_level(df: pd.DataFrame):
