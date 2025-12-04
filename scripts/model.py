@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier, XGBRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 
@@ -15,18 +15,27 @@ from .features import (
 from .config import load_config
 
 def _default_model():
-    return XGBClassifier(
+    # Regressor with logistic link so we can train on soft labels directly.
+    return XGBRegressor(
         n_estimators=400,
         max_depth=4,
         learning_rate=0.05,
         subsample=0.8,
         colsample_bytree=0.8,
-        objective="binary:logistic",
+        objective="reg:logistic",
         eval_metric="logloss",
         tree_method="hist",
         n_jobs=-1,
         random_state=42,
     )
+
+
+def _predict_proba_model(model, X_batch):
+    """Return P1 win probability for either classifier or regressor."""
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X_batch)[:, 1]
+    preds = model.predict(X_batch)
+    return np.clip(preds, 0.0, 1.0)
 
 
 def train_model(file_paths, model_out, config_path=None):
@@ -80,35 +89,36 @@ def train_model(file_paths, model_out, config_path=None):
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
 
-    X, _, _, sample_weights, y = build_dataset(df)
-    y = y.astype(int)
+    X, y_soft, _, sample_weights, y_hard = build_dataset(df)
+    y_hard = y_hard.astype(int)
     train_cfg = cfg.get("training", {})
     weight_exp = float(train_cfg.get("sample_weight_exponent", 1.0))
     adjusted_weights = np.power(sample_weights, weight_exp)
 
-    print("[train] dataset shape:", X.shape, "positives (P1 wins):", int(y.sum()))
+    print("[train] dataset shape:", X.shape, "positives (P1 wins):", int(y_hard.sum()))
     print(f"[train] long_window={long_window}, short_window={short_window}, alpha={alpha}")
     print(f"[train] weight exponent: {weight_exp}")
     print(f"[train] sample weights - mean: {adjusted_weights.mean():.2f}, max: {adjusted_weights.max():.2f}")
 
     idx = np.arange(len(X))
     idx_train, idx_test = train_test_split(
-        idx, test_size=0.2, random_state=42, stratify=y
+        idx, test_size=0.2, random_state=42, stratify=y_hard
     )
 
     X_train, X_test = X[idx_train], X[idx_test]
-    y_train, y_test = y[idx_train], y[idx_test]
+    y_train_soft, y_test_soft = y_soft[idx_train], y_soft[idx_test]
+    y_train_hard, y_test_hard = y_hard[idx_train], y_hard[idx_test]
     w_train, w_test = adjusted_weights[idx_train], adjusted_weights[idx_test]
 
     model = _default_model()
-    model.fit(X_train, y_train, sample_weight=w_train)
+    model.fit(X_train, y_train_soft, sample_weight=w_train)
 
-    y_proba = model.predict_proba(X_test)[:, 1]
+    y_proba = _predict_proba_model(model, X_test)
     y_pred = (y_proba >= 0.5).astype(int)
 
-    acc = accuracy_score(y_test, y_pred)
+    acc = accuracy_score(y_test_hard, y_pred)
     try:
-        auc = roc_auc_score(y_test, y_proba)
+        auc = roc_auc_score(y_test_hard, y_proba)
     except ValueError:
         auc = float("nan")
 
@@ -119,9 +129,21 @@ def train_model(file_paths, model_out, config_path=None):
     model.save_model(model_out)
     print(f"[train] Model saved to: {model_out}")
 
-def load_model(model_path: str) -> XGBClassifier:
+def load_model(model_path: str):
+    """
+    Load either regressor (preferred for soft labels) or classifier model.
+    Falls back to classifier for backwards compatibility with older checkpoints.
+    """
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
-    model = XGBClassifier()
-    model.load_model(model_path)
-    return model
+
+    last_error = None
+    for cls in (XGBRegressor, XGBClassifier):
+        try:
+            model = cls()
+            model.load_model(model_path)
+            return model
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+
+    raise RuntimeError(f"Unable to load model {model_path}: {last_error}")

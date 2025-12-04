@@ -188,8 +188,9 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         game_diff = abs(p1_games - p2_games)
         
         # Get set scores for set differential
-        p1_sets = pd.to_numeric(row.get('P1Sets', 0), errors='coerce')
-        p2_sets = pd.to_numeric(row.get('P2Sets', 0), errors='coerce')
+        # Use P1SetsWon and P2SetsWon which are now calculated before this function
+        p1_sets = pd.to_numeric(row.get('P1SetsWon', 0), errors='coerce')
+        p2_sets = pd.to_numeric(row.get('P2SetsWon', 0), errors='coerce')
         if pd.isna(p1_sets):
             p1_sets = 0
         if pd.isna(p2_sets):
@@ -240,6 +241,7 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         
         # Match point: maximum importance
         if is_match_point:
+            #print(f"Match point detected for Player {match_point_player}")
             return 7.0
         
         # Break point to win the set: receiver could win game AND set
@@ -418,10 +420,8 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
           .cumsum()
     )
     
-    # Calculate point importance for sample weighting
-    df['point_importance'] = df.apply(calculate_point_importance, axis=1)
-
     # Set progression features derived from per-set winners (0=no winner yet)
+    # IMPORTANT: Calculate these BEFORE point_importance so match point detection works
     match_groups = df[MATCH_COL]
     if 'SetWinner' in df.columns:
         set_winners = pd.to_numeric(df['SetWinner'], errors='coerce').fillna(0.0).astype(int)
@@ -437,9 +437,13 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
                    .cumsum()
                    .astype(float))
 
-
     df['P1SetsWon'] = p1_set_wins
     df['P2SetsWon'] = p2_set_wins
+    
+    # Calculate point importance for sample weighting
+    # NOW we have P1SetsWon and P2SetsWon available for match point detection
+    df['point_importance'] = df.apply(calculate_point_importance, axis=1)
+
     df['SetsWonDiff_raw'] = df['P1SetsWon'] - df['P2SetsWon']
     
     # SetsWonDiff with NON-LINEAR step function:

@@ -91,10 +91,17 @@ def main():
             return
         
         df = pd.read_csv(args.csv)
+        if 'counterfactual_computed' not in df.columns:
+            df['counterfactual_computed'] = True
         match_id = df['match_id'].iloc[0]
         os.makedirs(args.plot_dir, exist_ok=True)
         
-        plot_match_probabilities(df, str(match_id), args.plot_dir)
+        has_alt = all(col in df.columns for col in ["prob_p1_alt","prob_p2_alt","prob_p1_lose_alt","prob_p2_lose_alt"])
+        if has_alt:
+            from .plotting import plot_match_probabilities_comparison
+            plot_match_probabilities_comparison(df, str(match_id), args.plot_dir)
+        else:
+            plot_match_probabilities(df, str(match_id), args.plot_dir)
         print(f"[replot] Regenerated plot from {args.csv}")
 
     elif args.command == "hyperopt":

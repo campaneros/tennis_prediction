@@ -237,15 +237,15 @@ The prediction generates four probability curves showing current state and count
    - Probability that Player 2 wins = 1 - P(P1 wins)
    - Always sums to 1.0 with the P1 probability
 
-3. **P1 wins | if P1 loses current point** [Green dashed line]
-   - **Counterfactual scenario**: What if P1 loses this specific point?
-   - Shows how P1's win probability would change if P1 fails to win this point
-   - Applies whether P1 is serving (would lose serve point) or receiving (would fail to win return point)
+3. **P1 wins | alternate point outcome** [Green dashed line]
+   - **Counterfactual scenario**: What if the opposite player wins this point?
+   - Shows how P1's win probability would change if the current point goes against P1
+   - Applies whether P1 is serving or receiving
 
-4. **P2 wins | if P2 loses current point** [Red dashed line]
-   - **Counterfactual scenario**: What if P2 loses this specific point?
-   - Shows how P2's win probability would change if P2 fails to win this point
-   - Applies whether P2 is serving (would lose serve point) or receiving (would fail to win return point)
+4. **P2 wins | alternate point outcome** [Red dashed line]
+   - **Counterfactual scenario**: What if the opposite player wins this point?
+   - Shows how P2's win probability would change if the current point goes against P2
+   - Applies whether P2 is serving or receiving
 
 **Example: P2 has match point while serving (point index ~400)**
 - **Current state**: P2 probability is very high (~0.95) [orange solid line]
@@ -264,6 +264,8 @@ The prediction generates four probability curves showing current state and count
 - The counterfactuals show **player-specific risk**, not just server risk
 - At match point for P2: red dashed line plummets, green dashed line soars (P1 benefits from P2's loss)
 
+**Vertical markers**:
+- Vertical dashed lines highlight only the points where an alternate probability is actually computed (e.g., all points for importance mode, or just simulated critical points for semi/realistic mode).
 
 
 
