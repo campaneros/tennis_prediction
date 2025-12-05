@@ -6,29 +6,21 @@ Below are **all the commands you need to run the code**.
 
 ---
 
-## Model Features
+## Model Features (26 total)
 
-The model uses **18 features** to predict match outcomes:
+Serve/return and state:
+- P_srv_win_long, P_srv_lose_long, P_srv_win_short, P_srv_lose_short
+- PointServer, momentum, Momentum_Diff, Score_Diff, Game_Diff, CurrentSetGamesDiff
+- SrvScr, RcvScr, SetNo, GameNo, PointNumber, point_importance
 
-### Feature Importance Ranking
-1. **SetsWonDiff (21.8%)** - Set difference scaled by match progress (weight: 0.25)
-2. **SetNo (17.1%)** - Set number normalized (1-5)
-3. **Game_Diff (11.1%)** - Game difference in current set
-4. **is_decider_tied (9.0%)** - Binary flag for tied decisive set (set 4+, sets 2-2)
-5. **GameNo (4.8%)** - Game number within set
-6. **PointNumber (4.8%)** - Point number within match
-7. **CurrentSetGamesDiff (4.5%)** - In-set game difference amplified (×2.5)
-8. **Momentum_Diff (3.7%)** - Momentum difference normalized per set (z-score)
-9. **Score_Diff (3.2%)** - Point score difference in current game
-10. **momentum (3.0%)** - Exponential weighted moving average (alpha=0.15)
-11. **SrvScr (2.9%)** - Cumulative points won when P1 served in game
-12. **RcvScr (2.9%)** - Cumulative points won when P1 received in game
-13. **Server (2.7%)** - Binary: 1 if P1 serves, 0 if P2 serves
-14. **point_importance (2.1%)** - Critical point indicator (1.0-7.0)
-15. **P_srv_win_long (2.0%)** - P1 serve win rate (20-point window)
-16. **P_srv_lose_long (1.9%)** - P1 return game win rate (20-point window)
-17. **P_srv_lose_short (1.3%)** - P1 return win rate (5-point window)
-18. **P_srv_win_short (1.2%)** - P1 serve win rate (5-point window)
+Set/decider context:
+- P1SetsWon, P2SetsWon, SetsWonDiff, SetsWonAdvantage
+- SetWinProbPrior, SetWinProbEdge, SetWinProbLogit
+- is_decider_tied, DistanceToMatchEnd, MatchFinished
+
+### Training target and constraints
+- Soft labels blend the hard match outcome with a set-aware prior so the model learns: ~0.5 when sets are tied (slight drift at 2-2), capped ~0.70 when up one set, ~0.90 when up two sets.
+- Model: `XGBRegressor` with `reg:logistic` and monotone constraints (+ for P1 set edge, – for P2 set edge, + for set priors) so tree splits respect tennis logic.
 
 ### Sample Weighting
 Points are weighted during training based on:
@@ -42,7 +34,7 @@ weight = point_importance^0.5 × competitive_multiplier × tied_boost
 ### Training Configuration
 - **long_window**: 20 points
 - **short_window**: 5 points
-- **momentum_alpha**: 0.15 (faster decay, more reactive)
+- **momentum_alpha**: 0.35 (faster decay, more reactive)
 - **sample_weight_exponent**: 0.5
 
 **Note**: Match 1701 is excluded from training to prevent test set leakage.
@@ -110,7 +102,6 @@ tennisctl predict \
   --match-id <MATCH_ID> \
   --plot-dir plots
 ```
-
 
 
 
