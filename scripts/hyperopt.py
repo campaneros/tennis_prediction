@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-from xgboost import XGBClassifier
+from xgboost import XGBRegressor
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, cross_val_predict, KFold
 from sklearn.metrics import (
     roc_auc_score,
@@ -12,7 +12,7 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
-from .data_loader import load_points_multiple, WINDOW
+from .data_loader import load_points_multiple
 from .config import load_config
 from .features import (
     add_match_labels,
@@ -20,6 +20,7 @@ from .features import (
     add_leverage_and_momentum,
     add_additional_features,
     build_dataset,
+    MATCH_FEATURE_COLUMNS,
 )
 from .plotting import plot_hyperopt_results, plot_confusion_matrix_and_roc
 
@@ -74,12 +75,26 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     print(f"[hyperopt] sample weights - mean: {sample_weights.mean():.2f}, max: {sample_weights.max():.2f}")
 
 
-    base_model = XGBClassifier(
-        objective="binary:logistic",
+    # Monotone constraints aligned to MATCH_FEATURE_COLUMNS (26 features)
+    constraints = []
+    for name in MATCH_FEATURE_COLUMNS:
+        if name == "P1SetsWon":
+            constraints.append(1)
+        elif name == "P2SetsWon":
+            constraints.append(-1)
+        elif name in ("SetsWonDiff", "SetsWonAdvantage", "SetWinProbPrior", "SetWinProbEdge", "SetWinProbLogit"):
+            constraints.append(1)
+        else:
+            constraints.append(0)
+    constraint_str = "(" + ",".join(str(c) for c in constraints) + ")"
+
+    base_model = XGBRegressor(
+        objective="reg:logistic",
         eval_metric="logloss",
         tree_method="hist",
         n_jobs=-1,
         random_state=42,
+        monotone_constraints=constraint_str,
     )
 
     # ------------------------------------------------------------------
@@ -130,7 +145,7 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
             return_train_score=False,
         )
 
-    search.fit(X, y, sample_weight=sample_weights)
+    search.fit(X, y_soft, sample_weight=sample_weights)
 
     print("[hyperopt] Best parameters:")
     print(search.best_params_)
@@ -193,27 +208,29 @@ def run_hyperopt(file_paths, n_iter: int, plot_dir: str, model_out: str, config_
     all_params = search.cv_results_["params"]
     print("[hyperopt] Computing confusion matrix + ROC for all models...")
     for idx, params in enumerate(all_params):
-        model_i = XGBClassifier(
-            objective="binary:logistic",
+        model_i = XGBRegressor(
+            objective="reg:logistic",
             eval_metric="logloss",
             tree_method="hist",
             n_jobs=-1,
             random_state=42,
+            monotone_constraints=constraint_str,
         )
         model_i.set_params(**params)
 
         # Cross-validated probabilities for "P1 wins" (class 1 in y)
         # Use soft labels for training; KFold avoids stratification issues with soft labels
-        y_proba_p1 = cross_val_predict(
+        y_pred_soft = cross_val_predict(
             model_i,
             X,
             y_soft,
             cv=cv,
-            method="predict_proba",
+            method="predict",
             fit_params={"sample_weight": sample_weights},
-        )[:, 1]
+        )
 
-        # Flip to P2 probability + predictions for (0=P1,1=P2) convention
+        # Clamp to [0,1] and derive P2 probability for (0=P1,1=P2) convention
+        y_proba_p1 = np.clip(y_pred_soft, 0.0, 1.0)
         y_proba_p2 = 1.0 - y_proba_p1
         y_pred_cm = (y_proba_p2 >= 0.5).astype(int)
 
