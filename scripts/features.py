@@ -38,6 +38,11 @@ MATCH_FEATURE_COLUMNS = [
     "is_decider_tied",
     "DistanceToMatchEnd",
     "MatchFinished",
+    "is_tiebreak",  # Binary indicator for tiebreak
+    "is_decisive_tiebreak",  # Binary for decisive tiebreak (2-2 or 1-1 sets)
+    "tiebreak_score_diff",  # Score differential in tiebreak (normalized)
+    "tiebreak_win_proximity",  # How close to winning tiebreak (exponential)
+    "is_tiebreak_late_stage",  # Binary: is score sum >= 10?
 ]
 
 # Point-level predictions reuse the exact same feature ordering.
@@ -139,9 +144,35 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         """
         base_weight = 1.0
         
-        # Get scores
-        p1_score = score_to_numeric(row.get('P1Score', 0))
-        p2_score = score_to_numeric(row.get('P2Score', 0))
+        # Get scores and detect tiebreak
+        # In tiebreak, scores are numeric (1,2,3,...) not tennis scores (15,30,40,AD)
+        p1_score_raw = row.get('P1Score', 0)
+        p2_score_raw = row.get('P2Score', 0)
+        
+        # Detect tiebreak by checking if scores are NOT standard tennis scores
+        is_tiebreak = False
+        try:
+            # Check if scores are purely numeric (tiebreak) vs tennis scores
+            p1_str = str(p1_score_raw).strip()
+            p2_str = str(p2_score_raw).strip()
+            
+            # Standard tennis scores
+            tennis_scores = {'0', '15', '30', '40', 'AD', 'A'}
+            
+            # If both scores are NOT in tennis_scores set, it's a tiebreak
+            if p1_str not in tennis_scores and p2_str not in tennis_scores:
+                # Try to parse as integers (tiebreak scores)
+                p1_score = int(p1_str)
+                p2_score = int(p2_str)
+                is_tiebreak = True
+            else:
+                p1_score = score_to_numeric(p1_score_raw)
+                p2_score = score_to_numeric(p2_score_raw)
+        except (ValueError, TypeError):
+            # Fallback to standard conversion
+            p1_score = score_to_numeric(p1_score_raw)
+            p2_score = score_to_numeric(p2_score_raw)
+        
         server = row.get(SERVER_COL, 1)
         
         # Get games won (for set point detection)
@@ -156,15 +187,19 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         
         # Check if this could be a set-deciding point
         # Set point scenarios: 5-4, 5-3, 6-5 (player ahead could win set)
+        # Also check for tiebreak situations (6-6, 12-12 in 5th set, etc.)
         is_set_point_situation = False
         set_point_player = None
         
-        if p1_games >= 5 and p1_games >= p2_games + 1:
-            # P1 is ahead and could win set
+        # Tiebreak detection: games are tied at 6-6 or higher (12-12 in 5th set)
+        is_games_tied_for_tiebreak = (p1_games == p2_games) and (p1_games >= 6)
+        
+        if p1_games >= 5 and p1_games >= p2_games + 1 and not is_games_tied_for_tiebreak:
+            # P1 is ahead and could win set (not in tiebreak)
             is_set_point_situation = True
             set_point_player = 1
-        elif p2_games >= 5 and p2_games >= p1_games + 1:
-            # P2 is ahead and could win set
+        elif p2_games >= 5 and p2_games >= p1_games + 1 and not is_games_tied_for_tiebreak:
+            # P2 is ahead and could win set (not in tiebreak)
             is_set_point_situation = True
             set_point_player = 2
         
@@ -198,51 +233,53 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         set_diff = abs(p1_sets - p2_sets)
         
         # MATCH POINT DETECTION: Maximum importance (7.0)
-        # Check if either player is one point away from winning the match
-        is_match_point = False
-        match_point_player = 0
+        # A match point occurs when:
+        # 1. A player has won enough sets to be 1 set away from match victory
+        # 2. That player is 1 point away from winning the current set/game
         
-        # Best-of-5: need 3 sets to win
-        # Best-of-3: need 2 sets to win
-        # Determine format based on max sets played (if 5th set exists, it's best-of-5)
         set_no = pd.to_numeric(row.get('SetNo', 1), errors='coerce')
         if pd.isna(set_no):
             set_no = 1
         
-        # Check if player could win match by winning this point
-        if p1_sets == 2:  # P1 has won 2 sets
-            # In best-of-5: need 1 more set; in best-of-3: match point
-            if set_no <= 3:  # Best-of-3
-                if p1_games >= 5 and p1_games >= p2_games + 1:  # Could win set this game
-                    if (server == 1 and p1_score >= 3 and p1_score > p2_score) or \
-                       (server == 2 and p1_score >= 3 and p1_score > p2_score):
-                        is_match_point = True
-                        match_point_player = 1
-            elif p1_sets > p2_sets:  # In best-of-5, P1 leading in sets
-                if p1_games >= 5 and p1_games >= p2_games + 1:  # Could win set
-                    if (server == 1 and p1_score >= 3 and p1_score > p2_score) or \
-                       (server == 2 and p1_score >= 3 and p1_score > p2_score):
-                        is_match_point = True
-                        match_point_player = 1
+        # Determine match format and sets needed to win
+        # Best-of-5: need 3 sets, best-of-3: need 2 sets
+        is_best_of_5 = (set_no >= 4) or (p1_sets + p2_sets >= 3)
+        sets_to_win = 3 if is_best_of_5 else 2
         
-        if p2_sets == 2:  # P2 has won 2 sets
-            if set_no <= 3:  # Best-of-3
-                if p2_games >= 5 and p2_games >= p1_games + 1:  # Could win set this game
-                    if (server == 1 and p2_score >= 3 and p2_score > p1_score) or \
-                       (server == 2 and p2_score >= 3 and p2_score > p1_score):
-                        is_match_point = True
-                        match_point_player = 2
-            elif p2_sets > p1_sets:  # In best-of-5, P2 leading in sets
-                if p2_games >= 5 and p2_games >= p1_games + 1:  # Could win set
-                    if (server == 1 and p2_score >= 3 and p2_score > p1_score) or \
-                       (server == 2 and p2_score >= 3 and p2_score > p1_score):
-                        is_match_point = True
-                        match_point_player = 2
+        # Check if either player has sets_to_win - 1 sets (one set away from victory)
+        p1_one_set_away = (p1_sets == sets_to_win - 1)
+        p2_one_set_away = (p2_sets == sets_to_win - 1)
         
-        # Match point: maximum importance
-        if is_match_point:
-            #print(f"Match point detected for Player {match_point_player}")
-            return 7.0
+        # CASE 1: Match point in TIEBREAK
+        # Use is_tiebreak (detected by numeric scores) OR is_games_tied_for_tiebreak (6-6, 12-12, etc.)
+        in_tiebreak = is_tiebreak or is_games_tied_for_tiebreak
+        
+        if in_tiebreak and (p1_one_set_away or p2_one_set_away):
+            # In tiebreak: need score >= 6 (or >= 10 for super tiebreak) with 2-point lead to win
+            # For simplicity, check >= 6 with 2-point lead (works for both regular and super tiebreaks)
+            if p1_one_set_away and p1_score >= 6 and p1_score >= p2_score + 1:
+                return 7.0  # P1 match point in tiebreak
+            elif p2_one_set_away and p2_score >= 6 and p2_score >= p1_score + 1:
+                return 7.0  # P2 match point in tiebreak
+        
+        # CASE 2: Match point in NORMAL GAME
+        # Player needs: (a) to be one set away AND (b) one point from winning game AND (c) able to win set
+        if not in_tiebreak:
+            # Check if winning this game would win the set
+            p1_can_win_set = (p1_games >= 5 and p1_games >= p2_games + 1)  # 5-3, 5-4, 6-5, etc.
+            p2_can_win_set = (p2_games >= 5 and p2_games >= p1_games + 1)
+            
+            # P1 match point: one set away + can win set + one point from winning game
+            if p1_one_set_away and p1_can_win_set:
+                # Check score: need >= 40 and ahead (server or receiver)
+                if p1_score >= 3 and p1_score > p2_score:
+                    return 7.0  # P1 match point (serving or receiving)
+            
+            # P2 match point: one set away + can win set + one point from winning game  
+            if p2_one_set_away and p2_can_win_set:
+                # Check score: need >= 40 and ahead (server or receiver)
+                if p2_score >= 3 and p2_score > p1_score:
+                    return 7.0  # P2 match point (serving or receiving)
         
         # Break point to win the set: receiver could win game AND set
         if is_set_point_situation:
@@ -328,37 +365,312 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
             else:  # 40-0
                 weight += 0.7
         
-        # Tiebreak detection: both players at 6 games: +2.5
-        if p1_games == 6 and p2_games == 6:
-            weight += 2.5
+        # Tiebreak: enhanced detection and weighting
+        if is_tiebreak or is_games_tied_for_tiebreak:
+            # Determine if this is a match-deciding tiebreak
+            is_match_deciding_tiebreak = (p1_one_set_away or p2_one_set_away)
+            
+            if is_match_deciding_tiebreak:
+                # DECISIVE TIEBREAK: Every point is critical, but reserve 7.0 for actual match points
+                # Base weight for being in decisive tiebreak (very high to compensate for data scarcity: 0.87%)
+                # Cap will be applied later to keep below 7.0
+                weight += 5.5
+                
+                # Additional weight based on tiebreak score
+                if is_tiebreak:
+                    # Close tiebreak: both players have chance
+                    score_sum = p1_score + p2_score
+                    if score_sum >= 12:  # Very late in tiebreak
+                        weight += 1.0
+                    elif score_sum >= 8:  # Mid-to-late tiebreak
+                        weight += 0.5
+                    
+                    # One player close to winning (but not match point yet)
+                    if (p1_score >= 5 or p2_score >= 5) and abs(p1_score - p2_score) <= 2:
+                        weight += 0.5
+                
+                # Cap at 6.5 to reserve 7.0 for match points only
+                weight = min(weight, 6.5)
+            else:
+                # Regular tiebreak (not match-deciding)
+                weight += 2.5
+                
+                # Tiebreak set point (not match point)
+                if is_tiebreak:
+                    if p1_score >= 6 and p1_score >= p2_score + 1:
+                        weight += 3.5  # P1 tiebreak set point
+                    elif p2_score >= 6 and p2_score >= p1_score + 1:
+                        weight += 3.5  # P2 tiebreak set point
+                    
+                    # Close tiebreak
+                    score_sum = p1_score + p2_score
+                    if score_sum >= 12 and abs(p1_score - p2_score) <= 1:
+                        weight += 2.0
+                    elif score_sum >= 10:
+                        weight += 1.0
+                
+                # Cap at 6.5 for non-match-deciding situations
+                weight = min(weight, 6.5)
         
         # Game differential weight: closer games are more critical
         # 5-4 or 4-5 is more critical than 5-0 or 5-1
-        if p1_games >= 3 or p2_games >= 3:  # Mid to late set
-            if game_diff == 0:  # Tied in games (3-3, 4-4, 5-5)
-                weight += 1.0
-            elif game_diff == 1:  # One game apart (4-3, 5-4)
-                weight += 0.7
-            elif game_diff == 2:  # Two games apart (5-3, 4-2)
-                weight += 0.3
+        # BUT: Skip these additional weights for tiebreaks to avoid exceeding 6.5 cap
+        if not (is_tiebreak or is_games_tied_for_tiebreak):
+            if p1_games >= 3 or p2_games >= 3:  # Mid to late set
+                if game_diff == 0:  # Tied in games (3-3, 4-4, 5-5)
+                    weight += 1.0
+                elif game_diff == 1:  # One game apart (4-3, 5-4)
+                    weight += 0.7
+                elif game_diff == 2:  # Two games apart (5-3, 4-2)
+                    weight += 0.3
         
         # Set differential weight: closer in sets means more critical match
         # Best of 5: being 2-1 or 1-1 is more critical than 2-0
         # Best of 3: being 1-1 is more critical than 1-0
-        if p1_sets >= 1 or p2_sets >= 1:  # Not first set
-            if set_diff == 0:  # Tied in sets (1-1, 2-2)
-                weight += 1.2
-            elif set_diff == 1 and (p1_sets >= 1 and p2_sets >= 1):  # 2-1 situation
-                weight += 0.8
+        # BUT: Skip for tiebreaks to avoid exceeding 6.5 cap
+        if not (is_tiebreak or is_games_tied_for_tiebreak):
+            if p1_sets >= 1 or p2_sets >= 1:  # Not first set
+                if set_diff == 0:  # Tied in sets (1-1, 2-2)
+                    weight += 1.2
+                elif set_diff == 1 and (p1_sets >= 1 and p2_sets >= 1):  # 2-1 situation
+                    weight += 0.8
         
         # Critical games: score is 30-30 or higher (tight game): +0.5
         if p1_score >= 2 and p2_score >= 2 and not (p1_score >= 3 and p2_score >= 3):
             weight += 0.5
         
-        return min(weight, 7.0)  # Cap at 7.0
+        # Final cap: ensure tiebreak points don't exceed 6.5 (reserve 7.0 for match points)
+        if is_tiebreak or is_games_tied_for_tiebreak:
+            return min(weight, 6.5)
+        else:
+            return min(weight, 7.0)  # Cap at 7.0 for non-tiebreak situations
+
+    # Set progression features derived from per-set winners (0=no winner yet)
+    # MUST be calculated BEFORE point_importance so match point detection works
+    match_groups = df[MATCH_COL]
+    if 'SetWinner' in df.columns:
+        set_winners = pd.to_numeric(df['SetWinner'], errors='coerce').fillna(0.0).astype(int)
+    else:
+        set_winners = pd.Series(0, index=df.index)
+
+    p1_set_wins = ((set_winners == 1).astype(int)
+                   .groupby(match_groups)
+                   .cumsum()
+                   .astype(float))
+    p2_set_wins = ((set_winners == 2).astype(int)
+                   .groupby(match_groups)
+                   .cumsum()
+                   .astype(float))
+
+    df['P1SetsWon'] = p1_set_wins
+    df['P2SetsWon'] = p2_set_wins
+    
+    # Calculate point importance for sample weighting
+    # NOW we have P1SetsWon and P2SetsWon available for match point detection
+    df['point_importance'] = df.apply(calculate_point_importance, axis=1)
+    
+    # TIEBREAK-SPECIFIC FEATURES for better probability estimation
+    # These help the model understand tiebreak dynamics, especially in decisive sets
+    
+    def extract_tiebreak_features(row):
+        """Extract tiebreak-specific features."""
+        p1_games = pd.to_numeric(row.get('P1GamesWon', 0), errors='coerce')
+        p2_games = pd.to_numeric(row.get('P2GamesWon', 0), errors='coerce')
+        if pd.isna(p1_games): p1_games = 0
+        if pd.isna(p2_games): p2_games = 0
+        
+        # Detect tiebreak: 6-6 games OR higher (super tiebreak at 12-12, etc.)
+        is_tiebreak = (p1_games == p2_games) and (p1_games >= 6)
+        
+        # Get scores
+        p1_score_raw = row.get('P1Score', 0)
+        p2_score_raw = row.get('P2Score', 0)
+        
+        # Parse tiebreak scores (numeric)
+        tiebreak_p1_score = 0
+        tiebreak_p2_score = 0
+        if is_tiebreak:
+            try:
+                p1_str = str(p1_score_raw).strip()
+                p2_str = str(p2_score_raw).strip()
+                if p1_str not in {'0', '15', '30', '40', 'AD', 'A'}:
+                    tiebreak_p1_score = int(p1_str)
+                    tiebreak_p2_score = int(p2_str)
+            except (ValueError, TypeError):
+                pass
+        
+        # Check if decisive tiebreak (2-2 sets in best-of-5, or 1-1 in best-of-3)
+        p1_sets = pd.to_numeric(row.get('P1SetsWon', 0), errors='coerce')
+        p2_sets = pd.to_numeric(row.get('P2SetsWon', 0), errors='coerce')
+        if pd.isna(p1_sets): p1_sets = 0
+        if pd.isna(p2_sets): p2_sets = 0
+        
+        is_decisive_tiebreak = is_tiebreak and (p1_sets == p2_sets) and (p1_sets >= 1)
+        
+        # Score differential in tiebreak (normalized to [-1, 1])
+        if is_tiebreak:
+            score_diff = tiebreak_p1_score - tiebreak_p2_score
+            # Normalize: ±7 points = ±1.0
+            tiebreak_score_diff = np.clip(score_diff / 7.0, -1.0, 1.0)
+            
+            # Proximity to winning tiebreak (need 7+ with 2-point lead in super tiebreak at Wimbledon 2019)
+            # For Wimbledon 2019 final set tiebreak: first to 7 points wins (no 2-point margin needed)
+            # Value from 0 (not close) to 1 (at match/set point)
+            
+            # Calculate how many points each player needs to win
+            # At Wimbledon 2019: first to 7 wins (simplified rule for 12-12 tiebreak)
+            p1_needs = max(0, 7 - tiebreak_p1_score)
+            p2_needs = max(0, 7 - tiebreak_p2_score)
+            
+            # Exponential proximity: use factor 1.0 for steeper curve
+            # This makes being close to winning much more impactful
+            p1_proximity = np.exp(-p1_needs * 1.0)  # ranges from exp(-6)≈0.0025 to exp(0)=1.0
+            p2_proximity = np.exp(-p2_needs * 1.0)
+            tiebreak_win_proximity = p1_proximity - p2_proximity  # [-1, 1]
+            
+            # Score differential (normalized to [-1, 1])
+            tiebreak_score_diff = score_diff / 7.0
+            
+            # Late stage indicator
+            total_tb_points = tiebreak_p1_score + tiebreak_p2_score
+            is_tiebreak_late_stage = float(total_tb_points >= 10)
+        else:
+            tiebreak_score_diff = 0.0
+            tiebreak_win_proximity = 0.0
+            is_tiebreak_late_stage = 0.0
+        
+        return pd.Series({
+            'is_tiebreak': float(is_tiebreak),
+            'is_decisive_tiebreak': float(is_decisive_tiebreak),
+            'tiebreak_score_diff': tiebreak_score_diff,
+            'tiebreak_win_proximity': tiebreak_win_proximity,
+            'is_tiebreak_late_stage': is_tiebreak_late_stage,
+        })
+    
+    tiebreak_features = df.apply(extract_tiebreak_features, axis=1)
+    df['is_tiebreak'] = tiebreak_features['is_tiebreak']
+    df['is_decisive_tiebreak'] = tiebreak_features['is_decisive_tiebreak']
+    df['tiebreak_score_diff'] = tiebreak_features['tiebreak_score_diff']
+    df['tiebreak_win_proximity'] = tiebreak_features['tiebreak_win_proximity']
+    df['is_tiebreak_late_stage'] = tiebreak_features['is_tiebreak_late_stage']
+
+    # Calculate point type indicators for PLOTTING ONLY (not used in model training)
+    # These provide clear visual markers on plots independent of point_importance
+    def extract_point_types(row):
+        """Extract binary indicators for break point, set point, match point."""
+        # Helper function to convert score to numeric
+        def score_to_numeric(score_raw):
+            score_map = {'0': 0, '15': 1, '30': 2, '40': 3, 'AD': 4, 'A': 4}
+            score_str = str(score_raw).strip().upper()
+            return score_map.get(score_str, 0)
+        
+        # Get basic information
+        server = row.get('PointServer', 1)
+        p1_score_raw = row.get('P1Score', 0)
+        p2_score_raw = row.get('P2Score', 0)
+        p1_games = pd.to_numeric(row.get('P1GamesWon', 0), errors='coerce')
+        p2_games = pd.to_numeric(row.get('P2GamesWon', 0), errors='coerce')
+        p1_sets = pd.to_numeric(row.get('P1SetsWon', 0), errors='coerce')
+        p2_sets = pd.to_numeric(row.get('P2SetsWon', 0), errors='coerce')
+        
+        if pd.isna(p1_games): p1_games = 0
+        if pd.isna(p2_games): p2_games = 0
+        if pd.isna(p1_sets): p1_sets = 0
+        if pd.isna(p2_sets): p2_sets = 0
+        
+        # Detect tiebreak
+        is_games_tied = (p1_games == p2_games) and (p1_games >= 6)
+        
+        # Parse scores
+        try:
+            p1_str = str(p1_score_raw).strip()
+            p2_str = str(p2_score_raw).strip()
+            tennis_scores = {'0', '15', '30', '40', 'AD', 'A'}
+            
+            # Check if tiebreak (numeric scores)
+            if p1_str not in tennis_scores and p2_str not in tennis_scores:
+                p1_score = int(p1_str)
+                p2_score = int(p2_str)
+                is_tb = True
+            else:
+                p1_score = score_to_numeric(p1_score_raw)
+                p2_score = score_to_numeric(p2_score_raw)
+                is_tb = False
+        except (ValueError, TypeError):
+            p1_score = score_to_numeric(p1_score_raw)
+            p2_score = score_to_numeric(p2_score_raw)
+            is_tb = False
+        
+        # Determine match format
+        set_no = pd.to_numeric(row.get('SetNo', 1), errors='coerce')
+        if pd.isna(set_no): set_no = 1
+        is_best_of_5 = (set_no >= 4) or (p1_sets + p2_sets >= 3)
+        sets_to_win = 3 if is_best_of_5 else 2
+        
+        # Initialize
+        is_break_point = 0.0
+        is_set_point = 0.0
+        is_match_point = 0.0
+        
+        # BREAK POINT: Receiver can win game
+        # Normal game: receiver at 40 or advantage, ahead in score
+        if not is_tb and not is_games_tied:
+            if server == 1:  # P2 is receiving
+                if p2_score >= 3 and p2_score > p1_score:
+                    is_break_point = 1.0
+            else:  # P1 is receiving
+                if p1_score >= 3 and p1_score > p2_score:
+                    is_break_point = 1.0
+        
+        # SET POINT: Player can win set
+        # Check if player is close to winning set
+        p1_can_win_set = (p1_games >= 5 and p1_games >= p2_games + 1)
+        p2_can_win_set = (p2_games >= 5 and p2_games >= p1_games + 1)
+        
+        if is_tb or is_games_tied:
+            # Tiebreak set point: score >= 6 with 1+ lead
+            if p1_score >= 6 and p1_score >= p2_score + 1:
+                is_set_point = 1.0
+            elif p2_score >= 6 and p2_score >= p1_score + 1:
+                is_set_point = 1.0
+        else:
+            # Normal game set point
+            if p1_can_win_set and p1_score >= 3 and p1_score > p2_score:
+                is_set_point = 1.0
+            elif p2_can_win_set and p2_score >= 3 and p2_score > p1_score:
+                is_set_point = 1.0
+        
+        # MATCH POINT: Player can win match
+        p1_one_set_away = (p1_sets == sets_to_win - 1)
+        p2_one_set_away = (p2_sets == sets_to_win - 1)
+        
+        if is_tb or is_games_tied:
+            # Tiebreak match point
+            if p1_one_set_away and p1_score >= 6 and p1_score >= p2_score + 1:
+                is_match_point = 1.0
+            elif p2_one_set_away and p2_score >= 6 and p2_score >= p1_score + 1:
+                is_match_point = 1.0
+        else:
+            # Normal game match point
+            if p1_one_set_away and p1_can_win_set and p1_score >= 3 and p1_score > p2_score:
+                is_match_point = 1.0
+            elif p2_one_set_away and p2_can_win_set and p2_score >= 3 and p2_score > p1_score:
+                is_match_point = 1.0
+        
+        return pd.Series({
+            'is_break_point': is_break_point,
+            'is_set_point': is_set_point,
+            'is_match_point': is_match_point
+        })
+    
+    point_types = df.apply(extract_point_types, axis=1)
+    df['is_break_point'] = point_types['is_break_point']
+    df['is_set_point'] = point_types['is_set_point']
+    df['is_match_point'] = point_types['is_match_point']
 
     # Momentum difference - normalize per MATCH to preserve match-level context
     # Z-score normalization balances momentum across entire match duration
+    # Reduced in decisive tiebreaks where current score matters more than past momentum
     if 'P1Momentum' in df.columns and 'P2Momentum' in df.columns:
         p1_mom = pd.to_numeric(df['P1Momentum'], errors='coerce').fillna(0)
         p2_mom = pd.to_numeric(df['P2Momentum'], errors='coerce').fillna(0)
@@ -370,6 +682,10 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         std_per_match = raw_diff.groupby(match_groups).transform('std').replace(0, 1)
         df['Momentum_Diff'] = (raw_diff - mean_per_match) / std_per_match
         df['Momentum_Diff'] = df['Momentum_Diff'].fillna(0.0).clip(-3.0, 3.0)
+        
+        # Reduce momentum weight in decisive tiebreaks (score matters more than history)
+        if 'is_decisive_tiebreak' in df.columns:
+            df.loc[df['is_decisive_tiebreak'] == 1.0, 'Momentum_Diff'] *= 0.3
     else:
         df['Momentum_Diff'] = 0.0
 
