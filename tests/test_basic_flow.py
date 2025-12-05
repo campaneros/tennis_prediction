@@ -9,7 +9,7 @@ from scripts.features import (
     add_additional_features,
     build_dataset,
 )
-from scripts.model import _default_model
+from scripts.model import _default_model, _predict_proba_model
 from scripts.config import load_config
 
 
@@ -129,32 +129,30 @@ def test_feature_pipeline_comprehensive():
     print(f"✓ Additional features: clipping + normalization verified")
     
     # Test 5: Build dataset
-    X, y, mask, sample_weights = build_dataset(df)
-    assert len(sample_weights) == len(y), "Sample weights should match y length"
-    assert X.shape[0] == y.shape[0], "X and y should have same number of rows"
-    assert X.shape[1] == 15, f"Expected 15 features, got {X.shape[1]}"
+    X, y_soft, mask, sample_weights, y_hard = build_dataset(df)
+    assert len(sample_weights) == len(y_soft), "Sample weights should match y length"
+    assert X.shape[0] == y_soft.shape[0], "X and y should have same number of rows"
+    assert X.shape[1] == 26, f"Expected 26 features, got {X.shape[1]}"
     assert X.shape[0] > 0, "Should have at least some valid samples"
-    assert y.sum() > 0 and y.sum() < len(y), "Should have both positive and negative classes"
+    assert y_hard.sum() > 0 and y_hard.sum() < len(y_hard), "Should have both positive and negative classes"
     assert not np.isnan(X).any(), "X should not contain NaN values"
-    print(f"✓ Dataset: X shape={X.shape}, y distribution: {y.sum()}/{len(y)} P1 wins")
+    print(f"✓ Dataset: X shape={X.shape}, y distribution (hard): {y_hard.sum()}/{len(y_hard)} P1 wins")
     
     # Test 6: Model training
     model = _default_model()
-    model.fit(X, y)
+    model.fit(X, y_soft)
     print(f"✓ Model training completed")
     
     # Test 7: Model prediction
-    y_pred = model.predict(X)
-    y_proba = model.predict_proba(X)
-    assert y_pred.shape == y.shape, "Predictions should match target shape"
-    assert y_proba.shape == (len(y), 2), "Probabilities should be (n_samples, 2)"
+    y_proba = _predict_proba_model(model, X)
+    assert y_proba.shape[0] == len(y_soft), "Probabilities should match target length"
     assert np.all((y_proba >= 0) & (y_proba <= 1)), "Probabilities should be between 0 and 1"
-    assert np.allclose(y_proba.sum(axis=1), 1.0), "Probabilities should sum to 1"
-    print(f"✓ Model predictions: accuracy={np.mean(y_pred == y):.3f}")
+    y_pred = (y_proba >= 0.5).astype(int)
+    print(f"✓ Model predictions: accuracy={np.mean(y_pred == y_hard):.3f}")
     
     # Test 8: Feature importance
     feature_importance = model.feature_importances_
-    assert len(feature_importance) == 15, "Should have importance for all 15 features"
+    assert len(feature_importance) == 26, "Should have importance for all 26 features"
     assert np.all(feature_importance >= 0), "Feature importance should be non-negative"
     print(f"✓ Feature importance computed")
     
@@ -171,7 +169,7 @@ def test_edge_cases():
     df_copy = add_rolling_serve_return_features(df_copy, long_window=2, short_window=1)
     df_copy = add_leverage_and_momentum(df_copy, alpha=0.5)
     df_copy = add_additional_features(df_copy)
-    X, y, _, sample_weights = build_dataset(df_copy)
+    X, y_soft, _, sample_weights, _ = build_dataset(df_copy)
     assert X.shape[0] > 0, "Should work with small windows"
     print(f"✓ Edge case: small windows (2, 1) - {X.shape[0]} samples")
     
@@ -182,9 +180,9 @@ def test_edge_cases():
         df_copy = add_rolling_serve_return_features(df_copy, long_window=10, short_window=3)
         df_copy = add_leverage_and_momentum(df_copy, alpha=alpha_val)
         df_copy = add_additional_features(df_copy)
-        X, y, _, sample_weights = build_dataset(df_copy)
+        X, y_soft, _, sample_weights, _ = build_dataset(df_copy)
         assert not np.isnan(X).any(), f"Should not have NaN with alpha={alpha_val}"
-        assert len(sample_weights) == len(y), "Sample weights should match y"
+        assert len(sample_weights) == len(y_soft), "Sample weights should match y"
     print(f"✓ Edge case: tested alpha values [0.1, 0.3, 0.5, 0.9]")
     
     print("\n✅ Edge case tests passed!")
