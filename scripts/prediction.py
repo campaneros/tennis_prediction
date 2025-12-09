@@ -773,7 +773,7 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
         
         if counterfactual_mode == "semi-realistic":
             # Only critical points in this match
-            threshold = 3.5  # Lower threshold to include more match points
+            threshold = 4.5  # Lower threshold to include more match points
             prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2, simulate_mask = compute_counterfactual_point_by_point(
                 match_df, df_raw_with_labels, model, config_path,
                 match_id=match_id_str, importance_threshold=threshold, mode="semi-realistic"
