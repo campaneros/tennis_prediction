@@ -8,6 +8,7 @@ from scripts.features import (
     add_leverage_and_momentum,
     add_additional_features,
     build_dataset,
+    MATCH_FEATURE_COLUMNS,
 )
 from scripts.model import _default_model, _predict_proba_model
 from scripts.config import load_config
@@ -130,9 +131,10 @@ def test_feature_pipeline_comprehensive():
     
     # Test 5: Build dataset
     X, y_soft, mask, sample_weights, y_hard = build_dataset(df)
+    expected_feature_count = len(MATCH_FEATURE_COLUMNS)
     assert len(sample_weights) == len(y_soft), "Sample weights should match y length"
     assert X.shape[0] == y_soft.shape[0], "X and y should have same number of rows"
-    assert X.shape[1] == 26, f"Expected 26 features, got {X.shape[1]}"
+    assert X.shape[1] == expected_feature_count, f"Expected {expected_feature_count} features, got {X.shape[1]}"
     assert X.shape[0] > 0, "Should have at least some valid samples"
     assert y_hard.sum() > 0 and y_hard.sum() < len(y_hard), "Should have both positive and negative classes"
     assert not np.isnan(X).any(), "X should not contain NaN values"
@@ -152,7 +154,7 @@ def test_feature_pipeline_comprehensive():
     
     # Test 8: Feature importance
     feature_importance = model.feature_importances_
-    assert len(feature_importance) == 26, "Should have importance for all 26 features"
+    assert len(feature_importance) == expected_feature_count, f"Should have importance for all {expected_feature_count} features"
     assert np.all(feature_importance >= 0), "Feature importance should be non-negative"
     print(f"✓ Feature importance computed")
     

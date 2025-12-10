@@ -234,9 +234,15 @@ def recalculate_match_state_from_point_winners(df):
 _FEATURE_INDEX = {name: idx for idx, name in enumerate(MATCH_FEATURE_COLUMNS)}
 
 
-def advance_game_state_simple(row_features, server_wins_point: bool, point_importance: float = 1.0, eff_window: float = 20.0):
+def advance_game_state_simple(row_features, point_winner: int, point_importance: float = 1.0, eff_window: float = 20.0):
     """
-    Update features to simulate counterfactual scenario where server loses/wins the point.
+    Update features to simulate counterfactual scenario based on which player wins the point.
+    
+    Args:
+        row_features: Current feature vector
+        point_winner: 1 if P1 wins the point, 2 if P2 wins the point
+        point_importance: Importance weight of the point
+        eff_window: Effective window for Bayesian updates
     
     Takes into account point_importance to amplify changes for critical points like:
     - Break points (importance ~2-5)
@@ -322,6 +328,9 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
         importance_factor = 0.25 + (point_importance - 3.0) * 0.3125
         importance_factor = min(importance_factor, 1.5)
     
+    # Determine if server wins based on point_winner
+    server_wins = (point_winner == server)
+    
     # Bayesian update for long window
     alpha_long = P_win_long * eff_window
     beta_long = P_lose_long * eff_window
@@ -333,7 +342,7 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     bayesian_factor = np.power(importance_factor, 2.0)
     update_strength = 0.05 + bayesian_factor * 1.5  # Range: ~0.05 (normal) to 3.4 (critical)
     
-    if server_wins_point:
+    if server_wins:
         alpha_long_new = alpha_long + update_strength
         beta_long_new = beta_long
     else:
@@ -349,7 +358,7 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     alpha_short = P_win_short * short_window
     beta_short = P_lose_short * short_window
     
-    if server_wins_point:
+    if server_wins:
         alpha_short_new = alpha_short + update_strength
         beta_short_new = beta_short
     else:
@@ -381,7 +390,7 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     momentum_factor = np.power(importance_factor, 2.5)
     momentum_change = 0.15 * leverage * momentum_factor  # Further reduced base from 0.2 to 0.15
     
-    if server_wins_point:
+    if server_wins:
         # Winning critical point increases momentum significantly
         x[idx["momentum"]] = current_momentum + momentum_change
     else:
@@ -397,42 +406,28 @@ def advance_game_state_simple(row_features, server_wins_point: bool, point_impor
     game_change = np.power(importance_factor, 2.0) * 1.0  # Reduced from 1.5 and squared
     score_change = np.power(importance_factor, 2.0) * 1.5  # Reduced from 2.5 and squared
     
-    # Apply game differential change
-    if server == 1:
-        if server_wins_point:
-            x[idx["Game_Diff"]] = game_diff + game_change
-        else:
-            x[idx["Game_Diff"]] = game_diff - game_change
+    # Apply game differential change based on which player wins
+    # If P1 wins, P1 advantage increases; if P2 wins, P1 advantage decreases
+    if point_winner == 1:
+        x[idx["Game_Diff"]] = game_diff + game_change
     else:
-        if server_wins_point:
-            x[idx["Game_Diff"]] = game_diff - game_change
-        else:
-            x[idx["Game_Diff"]] = game_diff + game_change
+        x[idx["Game_Diff"]] = game_diff - game_change
     x[idx["Game_Diff"]] = np.clip(x[idx["Game_Diff"]], -3.0, 3.0)
     
-    # Apply score differential change
-    if server == 1:
-        if server_wins_point:
-            x[idx["Score_Diff"]] = score_diff + score_change
-        else:
-            x[idx["Score_Diff"]] = score_diff - score_change
+    # Apply score differential change based on which player wins
+    if point_winner == 1:
+        x[idx["Score_Diff"]] = score_diff + score_change
     else:
-        if server_wins_point:
-            x[idx["Score_Diff"]] = score_diff - score_change
-        else:
-            x[idx["Score_Diff"]] = score_diff + score_change
+        x[idx["Score_Diff"]] = score_diff - score_change
     x[idx["Score_Diff"]] = np.clip(x[idx["Score_Diff"]], -2.0, 2.0)
     
-    # Update SrvScr/RcvScr based on who served and won
-    if server_wins_point:
+    # Update SrvScr/RcvScr based on who served and who won
+    if point_winner == 1:
         if server == 1:
-            x[idx["SrvScr"]] += 1  # SrvScr
-        # If server=2, P1 metrics don't change
-    else:
-        # Server lost
-        if server == 2:
-            x[idx["RcvScr"]] += 1  # RcvScr (P1 received and won)
-        # If server=1 lost, P1 metrics don't improve
+            x[idx["SrvScr"]] += 1  # P1 served and won
+        else:
+            x[idx["RcvScr"]] += 1  # P1 received and won
+    # If P2 wins (point_winner == 2), P1 metrics don't improve
     
     return x
 
@@ -468,15 +463,13 @@ def compute_counterfactual_with_importance(X, model, point_importances, X_prev=N
 
         # State BEFORE point i (after point i-1)
         x_before = X_prev[i - 1] if X_prev is not None else X[i - 1]
-        server_at_i = int(x_before[idx[SERVER_COL]])
 
         actual_winner = int(point_winners[i])
         counterfactual_winner = 2 if actual_winner == 1 else 1
-        server_wins_cf = (counterfactual_winner == server_at_i)
 
         x_counter = advance_game_state_simple(
             x_before,
-            server_wins_point=server_wins_cf,
+            point_winner=counterfactual_winner,
             point_importance=importance_current
         )
 
