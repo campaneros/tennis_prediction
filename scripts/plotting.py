@@ -613,29 +613,43 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
         
         ax2.plot(x, dfm["prob_p1_alt"], label="P1 wins match (current)", linewidth=2, color='blue')
         ax2.plot(x, dfm["prob_p2_alt"], label="P2 wins match (current)", linewidth=2, color='orange')
-        ax2.plot(x, dfm["prob_p1_lose_alt"], "--", label=f"P1 wins | server loses ({mode})", 
+        ax2.plot(x, dfm["prob_p1_lose_alt"], "--", label=f"P1 wins | point winner loses ({mode})", 
                  linewidth=1.5, color='green')
-        ax2.plot(x, dfm["prob_p2_lose_alt"], "--", label=f"P2 wins | server loses ({mode})", 
+        ax2.plot(x, dfm["prob_p2_lose_alt"], "--", label=f"P2 wins | point winner loses ({mode})", 
                  linewidth=1.5, color='red')
         
-        # Add critical points markers
+        # Add critical points markers - ONLY where counterfactual was computed in semi-realistic mode
         vertical_lines2 = []
-        if vertical_cache:
-            added_labels = set()
-            dash_map = {'-': 'solid', '--': 'dash', ':': 'dot'}
-            for v in vertical_cache:
-                show_label = v['label'] not in added_labels
-                if show_label:
-                    ax2.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2, label=v['label'])
-                    added_labels.add(v['label'])
-                else:
-                    ax2.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2)
+        if mode == "semi-realistic" and 'counterfactual_computed' in dfm.columns:
+            # Use counterfactual_computed mask to show only critical points
+            critical_points = dfm[dfm['counterfactual_computed'] == True]
+            for idx in critical_points.index:
+                ax2.axvline(x=idx, color='red', alpha=0.4, linestyle='--', linewidth=1.5, 
+                           label='Critical Point' if idx == critical_points.index[0] else None)
                 vertical_lines2.append({
-                    "x": v['idx'],
-                    "color": v['color'],
-                    "dash": dash_map.get(v['linestyle'], 'dash'),
-                    "label": v['label'] if show_label else None
+                    "x": idx,
+                    "color": 'red',
+                    "dash": 'dash',
+                    "label": 'Critical Point' if idx == critical_points.index[0] else None
                 })
+        elif mode == "realistic":
+            # For realistic mode, show all important points from vertical_cache
+            if vertical_cache:
+                added_labels = set()
+                dash_map = {'-': 'solid', '--': 'dash', ':': 'dot'}
+                for v in vertical_cache:
+                    show_label = v['label'] not in added_labels
+                    if show_label:
+                        ax2.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2, label=v['label'])
+                        added_labels.add(v['label'])
+                    else:
+                        ax2.axvline(x=v['idx'], color=v['color'], alpha=v['alpha'], linestyle=v['linestyle'], linewidth=2)
+                    vertical_lines2.append({
+                        "x": v['idx'],
+                        "color": v['color'],
+                        "dash": dash_map.get(v['linestyle'], 'dash'),
+                        "label": v['label'] if show_label else None
+                    })
         
         ax2.set_xlabel("Point index in match")
         ax2.set_ylabel("Match win probability")
@@ -653,8 +667,8 @@ def plot_match_probabilities_comparison(df_valid: pd.DataFrame, match_id_to_plot
         traces2 = [
             {"x": x, "y": dfm["prob_p1_alt"], "name": "P1 wins match (current)", "color": "blue"},
             {"x": x, "y": dfm["prob_p2_alt"], "name": "P2 wins match (current)", "color": "orange"},
-            {"x": x, "y": dfm["prob_p1_lose_alt"], "name": f"P1 wins | server loses ({mode})", "color": "green", "dash": "dash"},
-            {"x": x, "y": dfm["prob_p2_lose_alt"], "name": f"P2 wins | server loses ({mode})", "color": "red", "dash": "dash"},
+            {"x": x, "y": dfm["prob_p1_lose_alt"], "name": f"P1 wins | point winner loses ({mode})", "color": "green", "dash": "dash"},
+            {"x": x, "y": dfm["prob_p2_lose_alt"], "name": f"P2 wins | point winner loses ({mode})", "color": "red", "dash": "dash"},
         ]
         html2 = os.path.join(plot_dir, f"match_{match_id_to_plot}_{mode}.html")
         _save_interactive_plot(traces2, vertical_lines2, f"Match probabilities ({mode}) - {match_id_to_plot}", html2)

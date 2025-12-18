@@ -24,6 +24,8 @@ def main():
                          help="Path to save trained model (JSON)")
     train_p.add_argument("--config", default=None,
                          help="Path to JSON config file (default: config.json)")
+    train_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
+                         help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
 
     # TRAIN-POINT (new)
     train_point_p = subparsers.add_parser("train-point", help="Train point-level model (predicts point winner)")
@@ -49,6 +51,8 @@ def main():
     pred_p.add_argument("--mode", choices=["importance", "semi-realistic", "realistic"], 
                         default="importance",
                         help="Counterfactual mode: 'importance' (fast, default), 'semi-realistic' (critical points only), 'realistic' (all points, slow)")
+    pred_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
+                        help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
 
     # REPLOT
     replot_p = subparsers.add_parser("replot", help="Regenerate plot from saved probabilities CSV")
@@ -74,15 +78,17 @@ def main():
     args = parser.parse_args()
 
     if args.command == "train":
-        train_model(args.files, args.model_out, config_path=args.config)
+        gender = getattr(args, 'gender', 'male')
+        train_model(args.files, args.model_out, config_path=args.config, gender=gender)
     
     elif args.command == "train-point":
         train_point_model(args.files, args.model_out, config_path=args.config)
 
     elif args.command == "predict":
         mode = getattr(args, 'mode', 'importance')
+        gender = getattr(args, 'gender', 'male')
         run_prediction(args.files, args.model, args.match_id, args.plot_dir, 
-                      config_path=args.config, counterfactual_mode=mode)
+                      config_path=args.config, counterfactual_mode=mode, gender=gender)
 
     elif args.command == "replot":
         # Regenerate plot from saved CSV

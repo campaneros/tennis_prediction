@@ -38,12 +38,18 @@ def _predict_proba_model(model, X_batch):
     return np.clip(preds, 0.0, 1.0)
 
 
-def train_model(file_paths, model_out, config_path=None):
+def train_model(file_paths, model_out, config_path=None, gender="male"):
     """
     Train the XGBoost model on one or more CSV files and save it to 'model_out'.
 
     Feature parameters (long_window, short_window, momentum_alpha) are loaded
     from the JSON config.
+    
+    Args:
+        file_paths: List of CSV files to train on
+        model_out: Path to save the trained model
+        config_path: Path to config JSON file
+        gender: Filter by gender - "male" (match_id<2000), "female" (match_id>=2000), or "both" (all)
     """
     if not file_paths:
         raise ValueError("train_model: no input files provided")
@@ -59,8 +65,7 @@ def train_model(file_paths, model_out, config_path=None):
     # Filter out rows with missing match_id
     df = df.dropna(subset=['match_id'])
     
-    # Filter out women's matches (match_id >= 2000) - they are best-of-3, not best-of-5
-    # This ensures model learns from men's tennis where 5-set matches are possible
+    # Extract match number from match_id
     extracted = df['match_id'].str.extract(r'-(\d+)$')[0]
     # Drop rows where extraction failed (NaN)
     valid_mask = extracted.notna()
@@ -69,20 +74,45 @@ def train_model(file_paths, model_out, config_path=None):
     df['match_num'] = extracted.astype(int)
     
     original_count = len(df)
-    df = df[df['match_num'] < 2000].copy()
     
-    # Also exclude match 1701 to avoid test set leakage
-    test_match_filter = ~df['match_id'].str.contains('1701')
-    excluded_1701 = (~test_match_filter).sum()
-    df = df[test_match_filter].copy()
+    # Filter by gender
+    if gender == "male":
+        # Men's matches: match_id < 2000 (best-of-5 sets)
+        df = df[df['match_num'] < 2000].copy()
+        gender_label = "men's matches (best-of-5)"
+    elif gender == "female":
+        # Women's matches: match_id >= 2000 (best-of-3 sets)
+        df = df[df['match_num'] >= 2000].copy()
+        gender_label = "women's matches (best-of-3)"
+    else:  # both
+        # Use all matches
+        gender_label = "all matches (mixed)"
+    
+    # Exclude match 1701 to avoid test set leakage (only for male or both)
+    if gender in ["male", "both"]:
+        test_match_filter = ~df['match_id'].str.contains('1701')
+        excluded_1701 = (~test_match_filter).sum()
+        df = df[test_match_filter].copy()
+    else:
+        excluded_1701 = 0
     
     df = df.drop(columns=['match_num'])
     filtered_count = original_count - len(df)
+    
     if filtered_count > 0:
-        print(f"[train] Filtered {filtered_count} points total:")
-        print(f"[train]   - Women's matches (best-of-3): {filtered_count - excluded_1701}")
-        print(f"[train]   - Match 1701 (test set): {excluded_1701}")
-        print(f"[train] Training on {len(df)} points from men's matches")
+        print(f"[train] Gender filter: {gender}")
+        print(f"[train] Filtered {filtered_count} points:")
+        if gender == "male":
+            print(f"[train]   - Excluded women's matches (>=2000): {filtered_count - excluded_1701}")
+        elif gender == "female":
+            print(f"[train]   - Excluded men's matches (<2000): {filtered_count}")
+        else:
+            print(f"[train]   - Excluded none (using all)")
+        if excluded_1701 > 0:
+            print(f"[train]   - Match 1701 (test set): {excluded_1701}")
+        print(f"[train] Training on {len(df)} points from {gender_label}")
+    else:
+        print(f"[train] Training on {len(df)} points from {gender_label}")
     
     df = add_match_labels(df)
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
@@ -126,7 +156,8 @@ def train_model(file_paths, model_out, config_path=None):
     print(f"[train] Test ROC AUC:  {auc:.3f}")
 
     os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
-    model.save_model(model_out)
+    # Use get_booster().save_model() to avoid sklearn wrapper issues
+    model.get_booster().save_model(model_out)
     print(f"[train] Model saved to: {model_out}")
 
 def load_model(model_path: str):
@@ -141,6 +172,7 @@ def load_model(model_path: str):
     for cls in (XGBRegressor, XGBClassifier):
         try:
             model = cls()
+            # Use sklearn wrapper's load_model which works fine for loading
             model.load_model(model_path)
             return model
         except Exception as exc:  # noqa: BLE001
