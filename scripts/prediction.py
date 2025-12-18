@@ -22,6 +22,125 @@ def _predict_p1_proba(model, x_vec):
     return float(model.predict(x_vec.reshape(1, -1)))
 
 
+def is_critical_point(row, sets_to_win=3):
+    """
+    Identify truly critical points based on actual game situation, NOT point_importance.
+    
+    Critical points are:
+    1. Break points: P1BreakPoint=1 or P2BreakPoint=1 (from CSV - already correct)
+    2. Set points: winning this point wins the set
+    3. Match points: winning this point wins the match
+    4. Tiebreak critical points: score >= 3-3
+    
+    Args:
+        row: DataFrame row with point data
+        sets_to_win: Number of sets needed to win match (2 for best-of-3, 3 for best-of-5)
+    
+    Returns:
+        bool: True if critical point
+    """
+    # 1. Break points (from CSV data - these are already correct)
+    if 'P1BreakPoint' in row and row.get('P1BreakPoint', 0) == 1:
+        return True
+    if 'P2BreakPoint' in row and row.get('P2BreakPoint', 0) == 1:
+        return True
+    
+    # 2. Tiebreak critical points (score >= 3-3) AND match/set points in tiebreak
+    if 'is_tiebreak' in row and row.get('is_tiebreak', 0) == 1:
+        p1_score = row.get('P1Score', 0)
+        p2_score = row.get('P2Score', 0)
+        try:
+            p1_score_int = int(p1_score)
+            p2_score_int = int(p2_score)
+            
+            # Tiebreak critical: both at 3 or higher
+            if p1_score_int >= 3 and p2_score_int >= 3:
+                # Additional check for match/set points in tiebreak
+                # In tiebreak: first to 7 (with 2-point lead) wins
+                p1_sets = int(row.get('P1SetsWon', 0))
+                p2_sets = int(row.get('P2SetsWon', 0))
+                
+                # P1 is at match/set point in tiebreak
+                if p1_score_int >= 6 and p1_score_int >= p2_score_int + 1:
+                    # Match point if P1 is one set away from winning
+                    if p1_sets >= sets_to_win - 1:
+                        return True  # P1 match point in tiebreak
+                    else:
+                        return True  # P1 set point in tiebreak
+                
+                # P2 is at match/set point in tiebreak
+                if p2_score_int >= 6 and p2_score_int >= p1_score_int + 1:
+                    # Match point if P2 is one set away from winning
+                    if p2_sets >= sets_to_win - 1:
+                        return True  # P2 match point in tiebreak
+                    else:
+                        return True  # P2 set point in tiebreak
+                
+                return True  # Other critical tiebreak point (>=3-3)
+        except (ValueError, TypeError):
+            pass
+    
+    # 3. Set points and Match points
+    p1_games = int(row.get('P1GamesWon', 0))
+    p2_games = int(row.get('P2GamesWon', 0))
+    p1_score = str(row.get('P1Score', '0')).strip()
+    p2_score = str(row.get('P2Score', '0')).strip()
+    p1_sets = int(row.get('P1SetsWon', 0))
+    p2_sets = int(row.get('P2SetsWon', 0))
+    
+    # Helper function to check if winning current point wins the game
+    def can_win_game_on_this_point(my_score, opp_score):
+        """Check if player can win game by winning this point."""
+        # At 40, win point = win game (unless opponent is at 40/AD)
+        if my_score == '40':
+            return opp_score not in ['40', 'AD']
+        # At AD (advantage), win point = win game
+        if my_score == 'AD':
+            return True
+        return False
+    
+    # Helper function to check if winning game wins the set
+    def can_win_set_by_winning_game(my_games, opp_games):
+        """Check if winning the current game wins the set."""
+        # Standard set: need to reach 6 games with 2-game lead
+        # OR 7 games (after winning tiebreak at 6-6)
+        # In final set without tiebreak: need 2-game lead at any score >= 6
+        
+        if my_games >= 5:
+            # At 5 games: winning makes it 6, need opponent at <=4 to win set
+            if my_games == 5 and opp_games <= 4:
+                return True
+            # At 6+ games: need 2-game lead (works for extended sets like 8-7, 9-7, etc.)
+            if my_games >= 6 and my_games >= opp_games + 1:
+                return True
+        return False
+    
+    # Check P1 set point
+    is_p1_set_point = False
+    if can_win_game_on_this_point(p1_score, p2_score):
+        if can_win_set_by_winning_game(p1_games, p2_games):
+            is_p1_set_point = True
+    
+    # Check P2 set point
+    is_p2_set_point = False
+    if can_win_game_on_this_point(p2_score, p1_score):
+        if can_win_set_by_winning_game(p2_games, p1_games):
+            is_p2_set_point = True
+    
+    # Match point: set point AND player is one set away from winning match
+    is_p1_match_point = is_p1_set_point and (p1_sets >= sets_to_win - 1)
+    is_p2_match_point = is_p2_set_point and (p2_sets >= sets_to_win - 1)
+    
+    # Return True for ANY critical point
+    if is_p1_match_point or is_p2_match_point:
+        return True  # Match points
+    
+    if is_p1_set_point or is_p2_set_point:
+        return True  # Set points (not match points)
+    
+    return False
+
+
 def simulate_score_after_point_loss(row, server_wins: bool):
     """
     Simulate what the actual tennis score would be if the server wins/loses the point.
@@ -488,7 +607,7 @@ def compute_counterfactual_with_importance(X, model, point_importances, X_prev=N
 
 
 def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, config_path=None, 
-                                          match_id=None, importance_threshold=None, mode="realistic"):
+                                          match_id=None, mode="realistic"):
     """
     Compute counterfactual by modifying dataset point by point.
     
@@ -499,8 +618,10 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     4. Rebuild features and get model prediction
     
     Modes:
-      - realistic: rebuild entire match with flipped point
-      - semi-realistic: rebuild ONLY the prefix up to that point (no future info), with the point flipped
+      - realistic: rebuild entire match with flipped point for ALL points
+      - semi-realistic: rebuild ONLY for CRITICAL points (break points, set points, match points, tiebreak >=3-3)
+                       AND build dataset point-by-point to avoid future information leakage
+      - importance: use feature importance scaling (fast approximation)
     
     Args:
         df_valid: DataFrame with all features computed
@@ -508,11 +629,10 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
         model: Trained model
         config_path: Config file path
         match_id: If provided, only process points from this match
-        importance_threshold: If provided, only process points above this importance
-        mode: "realistic" (all points) or "semi-realistic" (critical only)
+        mode: "realistic" (all points), "semi-realistic" (critical only + point-by-point), or "importance" (scaling)
     
     Returns:
-        prob_p1, prob_p2, prob_p1_counterfactual, prob_p2_counterfactual
+        prob_p1, prob_p2, prob_p1_counterfactual, prob_p2_counterfactual, simulate_mask
     """
     from .features import (
         add_rolling_serve_return_features,
@@ -534,28 +654,8 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     prob_p1_counterfactual = np.zeros(n)
     prob_p2_counterfactual = np.zeros(n)
     
-    # Get current features
-    X_current, _, _, _, _ = build_dataset(df_valid)
-    
-    # Compute current probabilities
-    for i in range(len(X_current)):
-        p1_now = _predict_p1_proba(model, X_current[i])
-        prob_p1[i] = p1_now
-        prob_p2[i] = 1.0 - p1_now
-    
-    # Determine which points to simulate
-    point_importances = df_valid['point_importance'].values if 'point_importance' in df_valid.columns else np.ones(n)
-    
-    if importance_threshold is not None:
-        # Semi-realistic: only critical points
-        simulate_mask = point_importances > importance_threshold
-        n_simulate = np.sum(simulate_mask)
-        print(f"[{mode}] Simulating {n_simulate}/{n} points with importance > {importance_threshold}")
-    else:
-        # Realistic: all points
-        simulate_mask = np.ones(n, dtype=bool)
-        n_simulate = n
-        print(f"[{mode}] Simulating all {n_simulate} points")
+    # Build dataset ONCE for the entire match (much more efficient)
+    print(f"[{mode}] Building full match dataset once...")
     
     # Precompute per-match max values to preserve match format and normalization
     set_no_full_max = None
@@ -567,14 +667,115 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
         game_no_full_max = df_raw_with_labels.groupby(MATCH_COL)['GameNo'].transform('max')
     if 'PointNumber' in df_raw_with_labels.columns:
         point_no_full_max = df_raw_with_labels.groupby(MATCH_COL)['PointNumber'].transform('max')
-
-    # Process each point that needs simulation
-    simulated_count = 0
+    
+    # Build full dataset with features
+    full_df = df_raw_with_labels.copy()
+    if set_no_full_max is not None:
+        full_df['SetNo_full_max'] = set_no_full_max.values
+    if game_no_full_max is not None:
+        full_df['GameNo_full_max'] = game_no_full_max.values
+    if point_no_full_max is not None:
+        full_df['PointNumber_full_max'] = point_no_full_max.values
+    
+    full_df = add_rolling_serve_return_features(full_df, long_window=long_window, short_window=short_window)
+    full_df = add_additional_features(full_df)
+    full_df = add_leverage_and_momentum(full_df, alpha=alpha)
+    
+    X_full, _, mask_full, _, _ = build_dataset(full_df)
+    print(f"[{mode}] Full dataset built: {len(X_full)} valid points")
+    
+    # Create mapping from df_valid index to X_full position
     indices = list(df_valid.index)
+    index_to_x_pos = {}
+    valid_positions = np.flatnonzero(mask_full)
     
     for i, idx in enumerate(indices):
+        if idx in full_df.index:
+            try:
+                df_pos = full_df.index.get_loc(idx)
+                if df_pos < len(mask_full) and mask_full[df_pos]:
+                    match_pos = np.where(valid_positions == df_pos)[0]
+                    if len(match_pos) > 0:
+                        index_to_x_pos[i] = int(match_pos[0])
+            except KeyError:
+                pass
+    
+    # For realistic mode, use full dataset for current probabilities
+    build_point_by_point = (mode == "semi-realistic")  # Build dataset incrementally
+    
+    if not build_point_by_point:
+        for i in range(n):
+            if i in index_to_x_pos:
+                x_pos = index_to_x_pos[i]
+                if x_pos < len(X_full):
+                    p1_now = _predict_p1_proba(model, X_full[x_pos])
+                    prob_p1[i] = p1_now
+                    prob_p2[i] = 1.0 - p1_now
+    
+    # Determine which points to simulate based on mode
+    if build_point_by_point:
+        # Semi-realistic: only critical points (break points, set points, match points, tiebreak >=3-3)
+        # Determine sets_to_win for each point
+        if 'SetNo_full_max' in df_valid.columns:
+            max_sets = df_valid['SetNo_full_max'].values
+            sets_to_win_array = np.where(max_sets >= 4, 3, 2)  # 3 for bo5, 2 for bo3
+        elif 'SetNo' in df_valid.columns:
+            max_sets = df_valid.groupby(MATCH_COL)['SetNo'].transform('max').values
+            sets_to_win_array = np.where(max_sets >= 4, 3, 2)
+        else:
+            sets_to_win_array = np.full(n, 3)  # default to bo5
+        
+        # Check each row for critical points
+        simulate_mask = np.zeros(n, dtype=bool)
+        for i, (idx, row) in enumerate(df_valid.iterrows()):
+            sets_to_win = int(sets_to_win_array[i])
+            simulate_mask[i] = is_critical_point(row, sets_to_win=sets_to_win)
+        
+        n_simulate = np.sum(simulate_mask)
+        print(f"[{mode}] Simulating {n_simulate}/{n} CRITICAL points (break/set/match points, tiebreak >=3-3)")
+    else:
+        # Realistic: all points
+        simulate_mask = np.ones(n, dtype=bool)
+        n_simulate = n
+        print(f"[{mode}] Simulating all {n_simulate} points")
+    
+    # Process each point
+    simulated_count = 0
+    computed_count = 0
+    
+    for i, idx in enumerate(indices):
+        # For semi-realistic mode, ALWAYS build dataset point-by-point (no future information)
+        # For other modes, use pre-built X_full
+        
+        if build_point_by_point:
+            # Build dataset with only points up to current index (no future information)
+            current_df = df_raw_with_labels.loc[:idx].copy()
+            if set_no_full_max is not None:
+                current_df['SetNo_full_max'] = set_no_full_max.loc[current_df.index].values
+            if game_no_full_max is not None:
+                current_df['GameNo_full_max'] = game_no_full_max.loc[current_df.index].values
+            if point_no_full_max is not None:
+                current_df['PointNumber_full_max'] = point_no_full_max.loc[current_df.index].values
+            
+            # Rebuild features for this prefix only
+            current_df = add_rolling_serve_return_features(current_df, long_window=long_window, short_window=short_window)
+            current_df = add_additional_features(current_df)
+            current_df = add_leverage_and_momentum(current_df, alpha=alpha)
+            
+            X_curr, _, mask_curr, _, _ = build_dataset(current_df)
+            
+            # Get the last valid point (which is our current point)
+            if len(X_curr) > 0:
+                p1_now = _predict_p1_proba(model, X_curr[-1])
+                prob_p1[i] = p1_now
+                prob_p2[i] = 1.0 - p1_now
+                computed_count += 1
+                
+                if computed_count % 50 == 0:
+                    print(f"[{mode}] Computing current probabilities: {computed_count}/{n} points...")
+        
         if i == 0:
-            # First point: no previous state
+            # First point: no previous state for counterfactual
             prob_p1_counterfactual[i] = prob_p1[i]
             prob_p2_counterfactual[i] = prob_p2[i]
             continue
@@ -585,25 +786,27 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
             prob_p2_counterfactual[i] = prob_p2[i]
             continue
         
-        # Always remove future points so the counterfactual uses only past+current info
-        cf_df = df_raw_with_labels.loc[:idx].copy()
-        if set_no_full_max is not None:
-            cf_df['SetNo_full_max'] = set_no_full_max.loc[cf_df.index].values
-        if game_no_full_max is not None:
-            cf_df['GameNo_full_max'] = game_no_full_max.loc[cf_df.index].values
-        if point_no_full_max is not None:
-            cf_df['PointNumber_full_max'] = point_no_full_max.loc[cf_df.index].values
+        # COUNTERFACTUAL: Build dataset with INVERTED winner for this specific point
+        # We reuse current_df if we're in semi-realistic mode (already built above)
+        if build_point_by_point:
+            # Reuse the current_df built above, just invert the PointWinner
+            cf_df = current_df.copy()
+        else:
+            # Realistic mode: build from scratch
+            cf_df = df_raw_with_labels.loc[:idx].copy()
+            if set_no_full_max is not None:
+                cf_df['SetNo_full_max'] = set_no_full_max.loc[cf_df.index].values
+            if game_no_full_max is not None:
+                cf_df['GameNo_full_max'] = game_no_full_max.loc[cf_df.index].values
+            if point_no_full_max is not None:
+                cf_df['PointNumber_full_max'] = point_no_full_max.loc[cf_df.index].values
         
         # Get current row to determine actual winner
         current_row = df_raw_with_labels.loc[idx]
         point_winner = int(current_row.get('PointWinner', 1))
         
         # Counterfactual: INVERT who won the point
-        # If P1 won → counterfactual: P2 wins
-        # If P2 won → counterfactual: P1 wins
         counterfactual_winner = 2 if point_winner == 1 else 1
-        
-        # Modify ONLY the PointWinner for this point in the counterfactual dataset
         cf_df.at[idx, 'PointWinner'] = counterfactual_winner
         
         # Recalculate ALL scores, games, sets from the beginning based on modified PointWinner
@@ -686,10 +889,10 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     print(f"[{mode}] Mean change: {np.mean(diffs):.4f}, Max: {np.max(diffs):.4f}")
     print(f"[{mode}] Points with >10% change: {np.sum(diffs > 0.10)}/{n}")
     
-    if importance_threshold is not None:
+    if build_point_by_point:
         simulated_diffs = diffs[simulate_mask]
         if len(simulated_diffs) > 0:
-            print(f"[{mode}] Simulated points >10% change: {np.sum(simulated_diffs > 0.10)}/{n_simulate}")
+            print(f"[{mode}] Critical points >10% change: {np.sum(simulated_diffs > 0.10)}/{n_simulate}")
 
     return prob_p1, prob_p2, prob_p1_counterfactual, prob_p2_counterfactual, simulate_mask
 
@@ -697,7 +900,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
 
 
 def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, config_path: str | None = None, 
-                   counterfactual_mode: str = "importance"):
+                   counterfactual_mode: str = "importance", gender: str = "male"):
     """
     End-to-end prediction + plotting for a given set of files and one match_id.
 
@@ -717,6 +920,7 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
             - importance: Fast scaling using point_importance (always generated)
             - semi-realistic: Dataset modification for critical points only (importance > 3.5)
             - realistic: Dataset modification for ALL points (slow!)
+        gender: Filter by gender - "male" (match_id<2000), "female" (match_id>=2000), or "both" (all)
     """
     os.makedirs(plot_dir, exist_ok=True)
     cfg = load_config(config_path)
@@ -725,18 +929,53 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     short_window = int(fcfg.get("short_window", 5))
     alpha = float(fcfg.get("momentum_alpha", 1.2))
 
+    # Load data
     df = load_points_multiple(file_paths)
+    
+    # FILTER TO SPECIFIC MATCH IMMEDIATELY (before any processing)
+    match_id_str = str(match_id)
+    df[MATCH_COL] = df[MATCH_COL].astype(str)
+    df = df[df[MATCH_COL] == match_id_str].copy()
+    
+    if df.empty:
+        print(f"[predict] ERROR: No data found for match_id '{match_id_str}'")
+        return
+    
+    print(f"[predict] Filtered to match {match_id_str}: {len(df)} points")
+    
+    # Filter by gender if specified (should not be necessary if match already filtered, but keep for safety)
+    if gender != "both":
+        extracted = df['match_id'].str.extract(r'-(\d+)$')[0]
+        valid_mask = extracted.notna()
+        if valid_mask.any():
+            df_temp = df[valid_mask].copy()
+            df_temp['match_num'] = extracted[valid_mask].astype(int)
+            
+            if gender == "male":
+                df_temp = df_temp[df_temp['match_num'] < 2000].copy()
+            else:  # female
+                df_temp = df_temp[df_temp['match_num'] >= 2000].copy()
+            
+            df_temp = df_temp.drop(columns=['match_num'])
+            df = df_temp
+            print(f"[predict] After gender filter ({gender}): {len(df)} points")
+    
+    # Add match labels
     df = add_match_labels(df)
     
     # Keep a copy of raw data with labels for counterfactual simulation
     df_raw_with_labels = df.copy()
     
+    # Build features ONCE for this specific match only
+    print(f"[predict] Building features for match {match_id_str}...")
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
 
     X, y, mask, sample_weights, _ = build_dataset(df)
     df_valid = df[mask].copy()
+    
+    print(f"[predict] Dataset built: {len(df_valid)} valid points for match {match_id_str}")
 
     model = load_model(model_path)
 
@@ -755,27 +994,24 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     df_valid["prob_p1_lose_srv"] = prob_p1_lose
     df_valid["prob_p2_lose_srv"] = prob_p2_lose
 
-    # Filter to match for additional simulations
-    match_id_str = str(match_id)
-    df_valid[MATCH_COL] = df_valid[MATCH_COL].astype(str)
-    match_df = df_valid[df_valid[MATCH_COL] == match_id_str]
+    # For semi-realistic/realistic modes, we already have only the match data
+    match_df = df_valid.copy()
     
     # Optionally compute semi-realistic or realistic counterfactuals
-    if counterfactual_mode in ["semi-realistic", "realistic"] and not match_df.empty:
+    if counterfactual_mode in ["semi-realistic", "realistic"]:
         print(f"\n=== ADDITIONAL MODE: {counterfactual_mode.upper()} ===")
         
         if counterfactual_mode == "semi-realistic":
-            # Only critical points in this match
-            threshold = 4.5  # Lower threshold to include more match points
+            # Only CRITICAL points: break points, set points, match points, tiebreak >=3-3
             prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2, simulate_mask = compute_counterfactual_point_by_point(
                 match_df, df_raw_with_labels, model, config_path,
-                match_id=match_id_str, importance_threshold=threshold, mode="semi-realistic"
+                match_id=match_id_str, mode="semi-realistic"
             )
         else:  # realistic
             # ALL points in this match
             prob_p1_2, prob_p2_2, prob_p1_lose_2, prob_p2_lose_2, simulate_mask = compute_counterfactual_point_by_point(
                 match_df, df_raw_with_labels, model, config_path,
-                match_id=match_id_str, importance_threshold=None, mode="realistic"
+                match_id=match_id_str, mode="realistic"
             )
         
         # Add to match dataframe

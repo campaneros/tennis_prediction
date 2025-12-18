@@ -1265,6 +1265,34 @@ def build_dataset(df: pd.DataFrame):
     else:
         weights_all = np.ones(len(df), dtype=float)
     
+    # Add set proximity weight: closer to winning = higher weight
+    # For each point, calculate how many sets each player needs to win the match
+    if 'P1SetsWon' in df.columns and 'P2SetsWon' in df.columns:
+        p1_sets = df['P1SetsWon'].values.astype(float)
+        p2_sets = df['P2SetsWon'].values.astype(float)
+        
+        # Determine sets needed to win match (3 for best-of-5, 2 for best-of-3)
+        sets_needed = sets_to_win_series.values if isinstance(sets_to_win_series, pd.Series) else np.full(len(df), 3.0)
+        
+        # Calculate how many more sets each player needs
+        p1_sets_needed = sets_needed - p1_sets  # e.g., if 2-0, P1 needs 1 more set (for bo5)
+        p2_sets_needed = sets_needed - p2_sets
+        
+        # Minimum sets needed by either player (closest to winning)
+        min_sets_to_victory = np.minimum(p1_sets_needed, p2_sets_needed)
+        
+        # Weight based on proximity to match end:
+        # 1 set away: 2.0x
+        # 2 sets away: 1.5x
+        # 3+ sets away: 1.0x
+        set_proximity_weight = np.where(min_sets_to_victory <= 1.0, 2.0,
+                                       np.where(min_sets_to_victory <= 2.0, 1.5, 1.0))
+        
+        weights_all = weights_all * set_proximity_weight
+        print(f"[build_dataset] Set proximity weights - 1 set: {np.sum(min_sets_to_victory <= 1.0)}, "
+              f"2 sets: {np.sum((min_sets_to_victory > 1.0) & (min_sets_to_victory <= 2.0))}, "
+              f"3+ sets: {np.sum(min_sets_to_victory > 2.0)}")
+    
     # Boost weights based on match competitiveness
     # Competitive matches (4-5 sets) are underrepresented, so upweight them
     match_groups = df.groupby(MATCH_COL, sort=False).ngroup()
