@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 from xgboost import XGBClassifier, XGBRegressor
 from sklearn.model_selection import train_test_split
@@ -162,20 +163,59 @@ def train_model(file_paths, model_out, config_path=None, gender="male"):
 
 def load_model(model_path: str):
     """
-    Load either regressor (preferred for soft labels) or classifier model.
-    Falls back to classifier for backwards compatibility with older checkpoints.
+    Load either XGBoost or Neural Network model based on file extension.
+    
+    - .json with 'state_dict' key: Neural Network (PyTorch)
+    - .json without 'state_dict': XGBoost (regressor or classifier)
+    
+    Returns the loaded model in appropriate format.
     """
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
+    # Check if it's a neural network model
+    if model_path.endswith('.json'):
+        try:
+            with open(model_path, 'r') as f:
+                model_data = json.load(f)
+            
+            # Neural network models have 'state_dict' key
+            if 'state_dict' in model_data:
+                from .model_nn import load_nn_model
+                print(f"[load_model] Loading Neural Network model from {model_path}")
+                return load_nn_model(model_path)
+        except (json.JSONDecodeError, KeyError):
+            pass  # Fall through to XGBoost loading
+    
+    # Try loading as XGBoost model
     last_error = None
     for cls in (XGBRegressor, XGBClassifier):
         try:
             model = cls()
-            # Use sklearn wrapper's load_model which works fine for loading
             model.load_model(model_path)
+            print(f"[load_model] Loaded XGBoost {cls.__name__} from {model_path}")
             return model
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = exc
 
     raise RuntimeError(f"Unable to load model {model_path}: {last_error}")
+
+
+def predict_with_model(model, X):
+    """
+    Make predictions with either XGBoost or Neural Network model.
+    
+    Args:
+        model: Trained model (XGBoost or PyTorch)
+        X: Feature matrix (numpy array)
+    
+    Returns:
+        P(P1 wins) predictions as numpy array
+    """
+    # Check if it's a PyTorch model
+    if hasattr(model, 'network'):  # TennisNN has 'network' attribute
+        from .model_nn import predict_nn
+        return predict_nn(model, X)
+    else:
+        # XGBoost model
+        return _predict_proba_model(model, X)

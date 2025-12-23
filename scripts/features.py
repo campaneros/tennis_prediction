@@ -973,6 +973,7 @@ def add_rolling_serve_return_features(
     df: pd.DataFrame,
     long_window: int,
     short_window: int,
+    weight_serve_return: bool = False,
     ) -> pd.DataFrame:
     """
     Build Depken-style rolling serve/return features at two time scales:
@@ -991,6 +992,11 @@ def add_rolling_serve_return_features(
     For compatibility, we also expose:
       P_srv_win  = P_srv_win_long
       P_srv_lose = P_srv_lose_long
+      
+    Args:
+        weight_serve_return: If True, weight serve wins less (0.6x) and return wins more (1.5x)
+                            to reflect that holding serve is expected while breaking is significant.
+                            Use this for point-by-point reconstruction to reduce over-reaction to holds.
     """
     df = df.copy()
 
@@ -1001,20 +1007,50 @@ def add_rolling_serve_return_features(
     df[SERVER_COL] = df[SERVER_COL].astype(int)
     df[POINT_WINNER_COL] = df[POINT_WINNER_COL].astype(int)
 
+    # Determine contextual weights based on match situation
+    if weight_serve_return and 'SetNo' in df.columns:
+        set_no = pd.to_numeric(df['SetNo'], errors='coerce').fillna(1).astype(int)
+        # Context-dependent weights - MORE AGGRESSIVE to counter normalization:
+        # Sets 1-3: hold=0.4x (much less), break=2.0x (much more)
+        # Set 4: hold=0.6x, break=1.7x
+        # Set 5: hold=0.8x, break=1.3x (both critical but still differentiated)
+        serve_weight = np.where(set_no >= 5, 0.8,
+                               np.where(set_no >= 4, 0.6, 0.4))
+        return_weight = np.where(set_no >= 5, 1.3,
+                                np.where(set_no >= 4, 1.7, 2.0))
+    else:
+        serve_weight = 1.0
+        return_weight = 1.0
+
     # Base indicator columns: per side, did they serve+win or receive+win?
+    # Apply contextual weights if enabled
     for side in (1, 2):
         srv_win_col = f"s{side}_srv_win"
         rcv_win_col = f"s{side}_rcv_win"
 
-        df[srv_win_col] = (
-            (df[SERVER_COL] == side) &
-            (df[POINT_WINNER_COL] == side)
-        ).astype(int)
+        # Weighted indicators: serve wins count less, return wins count more
+        if weight_serve_return:
+            df[srv_win_col] = np.where(
+                (df[SERVER_COL] == side) & (df[POINT_WINNER_COL] == side),
+                serve_weight,  # Contextual weight for serve wins
+                0.0
+            )
+            df[rcv_win_col] = np.where(
+                (df[SERVER_COL] != side) & (df[POINT_WINNER_COL] == side),
+                return_weight,  # Contextual weight for return wins
+                0.0
+            )
+        else:
+            # Standard binary indicators
+            df[srv_win_col] = (
+                (df[SERVER_COL] == side) &
+                (df[POINT_WINNER_COL] == side)
+            ).astype(int)
 
-        df[rcv_win_col] = (
-            (df[SERVER_COL] != side) &
-            (df[POINT_WINNER_COL] == side)
-        ).astype(int)
+            df[rcv_win_col] = (
+                (df[SERVER_COL] != side) &
+                (df[POINT_WINNER_COL] == side)
+            ).astype(int)
 
         # Rolling sums for both long and short windows
         # Accumulate across entire match to capture player form evolution

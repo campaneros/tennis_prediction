@@ -2,6 +2,7 @@
 import argparse
 
 from .model import train_model
+from .model_nn import train_nn_model
 from .model_point import train_point_model
 from .prediction import run_prediction
 from .hyperopt import run_hyperopt
@@ -26,6 +27,12 @@ def main():
                          help="Path to JSON config file (default: config.json)")
     train_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
                          help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
+    train_p.add_argument("--model-type", choices=["xgboost", "nn"], default="xgboost",
+                         help="Model type: 'xgboost' (gradient boosting, default) or 'nn' (neural network)")
+    train_p.add_argument("--epochs", type=int, default=100,
+                         help="Number of epochs for neural network training (default: 100)")
+    train_p.add_argument("--batch-size", type=int, default=512,
+                         help="Batch size for neural network training (default: 512)")
 
     # TRAIN-POINT (new)
     train_point_p = subparsers.add_parser("train-point", help="Train point-level model (predicts point winner)")
@@ -51,6 +58,8 @@ def main():
     pred_p.add_argument("--mode", choices=["importance", "semi-realistic", "realistic"], 
                         default="importance",
                         help="Counterfactual mode: 'importance' (fast, default), 'semi-realistic' (critical points only), 'realistic' (all points, slow)")
+    pred_p.add_argument("--point-by-point", action="store_true",
+                        help="Rebuild dataset point by point (slower but more accurate for counterfactuals). If not set, uses full match info (faster).")
     pred_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
                         help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
 
@@ -79,7 +88,15 @@ def main():
 
     if args.command == "train":
         gender = getattr(args, 'gender', 'male')
-        train_model(args.files, args.model_out, config_path=args.config, gender=gender)
+        model_type = getattr(args, 'model_type', 'xgboost')
+        
+        if model_type == 'nn':
+            epochs = getattr(args, 'epochs', 100)
+            batch_size = getattr(args, 'batch_size', 512)
+            train_nn_model(args.files, args.model_out, config_path=args.config, 
+                          gender=gender, epochs=epochs, batch_size=batch_size)
+        else:
+            train_model(args.files, args.model_out, config_path=args.config, gender=gender)
     
     elif args.command == "train-point":
         train_point_model(args.files, args.model_out, config_path=args.config)
@@ -87,8 +104,10 @@ def main():
     elif args.command == "predict":
         mode = getattr(args, 'mode', 'importance')
         gender = getattr(args, 'gender', 'male')
+        point_by_point = getattr(args, 'point_by_point', False)
         run_prediction(args.files, args.model, args.match_id, args.plot_dir, 
-                      config_path=args.config, counterfactual_mode=mode, gender=gender)
+                      config_path=args.config, counterfactual_mode=mode, gender=gender,
+                      point_by_point=point_by_point)
 
     elif args.command == "replot":
         # Regenerate plot from saved CSV
