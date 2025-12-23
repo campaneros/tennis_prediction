@@ -739,6 +739,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
                                                  weight_serve_return=use_weighted)
     full_df = add_additional_features(full_df)
     full_df = add_leverage_and_momentum(full_df, alpha=alpha)
+    # NON aggiungiamo break features
     
     X_full, _, mask_full, _, _ = build_dataset(full_df)
     print(f"[{mode}] Full dataset built: {len(X_full)} valid points")
@@ -822,6 +823,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
                                                            weight_serve_return=True)
             current_df = add_additional_features(current_df)
             current_df = add_leverage_and_momentum(current_df, alpha=alpha)
+            # NON aggiungiamo break features
             
             X_curr, _, mask_curr, _, _ = build_dataset(current_df)
             
@@ -902,6 +904,7 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
                                                   weight_serve_return=(mode == "semi-realistic"))
         cf_df = add_additional_features(cf_df)
         cf_df = add_leverage_and_momentum(cf_df, alpha=alpha)
+        # NON aggiungiamo break features
 
         # If match did NOT end after flipping, ensure MatchFinished stays 0 so the model
         # does not treat this point as terminal.

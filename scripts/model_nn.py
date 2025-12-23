@@ -29,15 +29,89 @@ from .features import (
 from .config import load_config
 
 
-def prepare_nn_data(X, y, sample_weights, remove_duplicates=True, normalize=True, weight_cap=5.0):
+def add_break_features(df):
+    """
+    Aggiunge features che distinguono tra HOLD (servizio tenuto) e BREAK (servizio perso).
+    Solo i break dovrebbero pesare molto sulla probabilità di vittoria.
+    NON usare per BDT - solo per NN!
+    
+    Args:
+        df: DataFrame con colonne 'PointServer', 'P1GamesWon', 'P2GamesWon'
+    
+    Returns:
+        df con nuove colonne per break tracking
+    """
+    df = df.copy()
+    
+    # Identifica quando inizia un nuovo game
+    df['game_id'] = (df['P1GamesWon'] + df['P2GamesWon']).astype(str) + '_' + df['match_id'].astype(str)
+    df['new_game'] = (df['game_id'] != df.groupby('match_id')['game_id'].shift(1))
+    
+    # Chi serviva nel game precedente
+    df['prev_server'] = df.groupby('match_id')['PointServer'].shift(1)
+    
+    # Identifica i break: nuovo game E il server è cambiato in modo "sbagliato"
+    # Se P1 serviva e ora P2 ha vinto il game (P2GamesWon è aumentato) → break per P2
+    # Se P2 serviva e ora P1 ha vinto il game (P1GamesWon è aumentato) → break per P1
+    
+    df['P1_recent_breaks'] = 0.0
+    df['P2_recent_breaks'] = 0.0
+    
+    for match_id in df['match_id'].unique():
+        mask = df['match_id'] == match_id
+        match_df = df[mask].copy()
+        
+        p1_breaks = []
+        p2_breaks = []
+        
+        prev_p1_games = 0
+        prev_p2_games = 0
+        prev_server = None
+        
+        for idx, row in match_df.iterrows():
+            p1_games = row['P1GamesWon']
+            p2_games = row['P2GamesWon']
+            
+            # Check se c'è stato un break
+            if prev_server is not None:
+                if p1_games > prev_p1_games and prev_server == 2:
+                    # P1 ha vinto un game mentre P2 serviva → BREAK per P1
+                    p1_breaks.append(idx)
+                elif p2_games > prev_p2_games and prev_server == 1:
+                    # P2 ha vinto un game mentre P1 serviva → BREAK per P2
+                    p2_breaks.append(idx)
+            
+            prev_p1_games = p1_games
+            prev_p2_games = p2_games
+            prev_server = row['PointServer']
+        
+        # Conta break recenti (ultimi 3 game)
+        for i, (idx, row) in enumerate(match_df.iterrows()):
+            # Conta break di P1 negli ultimi 3 game
+            recent_p1_breaks = sum(1 for b_idx in p1_breaks if b_idx <= idx and i - match_df.index.get_loc(b_idx) <= 15)
+            recent_p2_breaks = sum(1 for b_idx in p2_breaks if b_idx <= idx and i - match_df.index.get_loc(b_idx) <= 15)
+            
+            df.loc[idx, 'P1_recent_breaks'] = min(recent_p1_breaks, 3)  # Cap a 3
+            df.loc[idx, 'P2_recent_breaks'] = min(recent_p2_breaks, 3)
+    
+    df['break_advantage'] = df['P1_recent_breaks'] - df['P2_recent_breaks']
+    
+    # Cleanup
+    df = df.drop(columns=['game_id', 'new_game', 'prev_server'])
+    
+    return df
+
+
+def prepare_nn_data(X, y, sample_weights, df=None, remove_duplicates=True, normalize=True, weight_cap=6.0):
     """
     Prepara i dati specificamente per la rete neurale.
     NON usare questa funzione per il BDT - solo per NN!
     
     Args:
-        X: Feature matrix
+        X: Feature matrix (può già includere break features se df aveva le colonne)
         y: Target labels
         sample_weights: Sample importance weights
+        df: DataFrame originale (non più usato - le break features sono già in X)
         remove_duplicates: Se True, rimuove punti duplicati
         normalize: Se True, normalizza le features con StandardScaler
         weight_cap: Cap massimo per i sample weights (riduce influenza outliers)
@@ -49,14 +123,20 @@ def prepare_nn_data(X, y, sample_weights, remove_duplicates=True, normalize=True
     y_proc = y.copy()
     w_proc = sample_weights.copy()
     
-    # 1. RIDUZIONE PESO: Cap sui sample weights per ridurre influenza di punti estremi
+    # Le break features sono ora già incluse in X se df le aveva
+    # Non serve più calcolarle qui
+    
+    # 1. PULIZIA FEATURES: riduzione rimossa - era troppo aggressiva
+    # Manteniamo Game_Diff e CurrentSetGamesDiff al valore originale
+    
+    # 2. RIDUZIONE PESO: Cap sui sample weights per ridurre influenza di punti estremi
     if weight_cap is not None:
         original_max = np.max(w_proc)
         w_proc = np.minimum(w_proc, weight_cap)
         if original_max > weight_cap:
             print(f"[prepare_nn_data] Capped weights: {original_max:.2f} -> {weight_cap:.2f}")
     
-    # 2. RIMOZIONE DUPLICATI: Identifica punti quasi identici e ne tiene solo uno
+    # 2. RIMOZIONE DUPLICATI: usa 3 decimali per non essere troppo aggressiva
     if remove_duplicates:
         # Hash delle features per trovare duplicati
         # Arrotondiamo a 3 decimali per trovare punti "abbastanza simili"
@@ -77,7 +157,7 @@ def prepare_nn_data(X, y, sample_weights, remove_duplicates=True, normalize=True
             w_proc = w_proc[unique_indices]
             print(f"[prepare_nn_data] Rimossi {n_removed} duplicati ({100*n_removed/len(X):.1f}%)")
     
-    # 3. NORMALIZZAZIONE: StandardScaler per features con media 0 e varianza 1
+    # 4. NORMALIZZAZIONE: StandardScaler per features con media 0 e varianza 1
     scaler = None
     if normalize:
         scaler = StandardScaler()
@@ -121,7 +201,7 @@ class TennisNN(nn.Module):
     potentially handling hold/break situations better than tree-based models.
     """
     
-    def __init__(self, input_dim=31, hidden_dims=[128, 64, 32], dropout=0.4, temperature=1.0):
+    def __init__(self, input_dim=31, hidden_dims=[512, 256, 128, 64], dropout=0.3, temperature=1.0):
         super(TennisNN, self).__init__()
         
         self.input_dim = input_dim
@@ -129,24 +209,31 @@ class TennisNN(nn.Module):
         self.dropout = dropout
         self.temperature = temperature  # Per calibrazione probabilità
         
-        # Build layers dynamically con più regolarizzazione
+        # NO BatchNorm - features raw hanno già scale corrette
+        # Usiamo solo inizializzazione Kaiming per ReLU
+        
+        # Build layers dynamically
         layers = []
         prev_dim = input_dim
         
         for i, hidden_dim in enumerate(hidden_dims):
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(nn.BatchNorm1d(hidden_dim))
+            linear = nn.Linear(prev_dim, hidden_dim)
+            # Kaiming initialization per ReLU
+            nn.init.kaiming_normal_(linear.weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(linear.bias)
+            layers.append(linear)
             layers.append(nn.ReLU())
-            # Dropout crescente nei layer più profondi
-            dropout_rate = dropout * (1.0 + 0.2 * i)
-            layers.append(nn.Dropout(min(dropout_rate, 0.5)))
+            layers.append(nn.Dropout(dropout))
             prev_dim = hidden_dim
         
-        # Output layer (senza Sigmoid, usiamo temperature scaling)
+        # Output layer con inizializzazione Xavier (per sigmoid)
         self.network = nn.Sequential(*layers)
         self.output_layer = nn.Linear(prev_dim, 1)
+        nn.init.xavier_normal_(self.output_layer.weight)
+        nn.init.zeros_(self.output_layer.bias)
     
     def forward(self, x):
+        # NO normalization - raw features mantengono semantica
         features = self.network(x)
         logits = self.output_layer(features)
         # Temperature scaling per calibrare le probabilità
@@ -154,10 +241,10 @@ class TennisNN(nn.Module):
 
 
 def train_nn_model(file_paths, model_out, config_path=None, gender="male",
-                   hidden_dims=[128, 64, 32], dropout=0.4, 
-                   epochs=150, batch_size=512, learning_rate=0.001,
+                   hidden_dims=[256, 128, 64], dropout=0.4, 
+                   epochs=250, batch_size=256, learning_rate=0.0005,
                    weight_exponent=0.5, use_weighted_features=True,
-                   temperature=1.5, early_stopping_patience=15):
+                   temperature=2.5, early_stopping_patience=25):
     """
     Train a neural network model for tennis match prediction.
     
@@ -166,27 +253,28 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
         model_out: Path to save trained model
         config_path: Path to config file
         gender: Filter by gender ("male", "female", "both")
-        hidden_dims: List of hidden layer dimensions
-        dropout: Dropout rate for regularization (default 0.4)
-        epochs: Maximum number of training epochs (default 150)
+        hidden_dims: List of hidden layer dimensions (default [256, 128, 64])
+        dropout: Dropout rate for regularization (default 0.3)
+        epochs: Maximum number of training epochs (default 200)
         batch_size: Batch size for training
         learning_rate: Learning rate for Adam optimizer
         weight_exponent: Exponent for sample weighting (weights = importance^exponent)
         use_weighted_features: If True, use weighted serve/return features
-        temperature: Temperature scaling per calibrazione probabilità (>1 = più smooth, default 1.5)
-        early_stopping_patience: Stop se validation loss non migliora per N epochs (default 15)
+        temperature: Temperature scaling per calibrazione probabilità (default 1.0)
+        early_stopping_patience: Stop se validation loss non migliora per N epochs (default 20)
     
     Returns:
         Trained model, test accuracy, test ROC AUC
         
     Miglioramenti specifici per NN (NON influenzano BDT):
         - Normalizzazione features con StandardScaler
-        - Rimozione duplicati
-        - Cap su sample weights (max 3.0)
+        - Rimozione duplicati moderata (3 decimali)
+        - Cap su sample weights (max 6.0)
         - Temperature scaling per calibrazione
         - Early stopping basato su validation loss
-        - Dropout crescente nei layer profondi
+        - Rete più profonda [256, 128, 64]
         - L2 regularization (weight_decay)
+        - Break features opzionali
     """
     print("[train_nn] Loading and processing data...")
     
@@ -240,6 +328,9 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
     
+    # NON aggiungiamo break features - causano problemi di predizione
+    # df = add_break_features(df)
+    
     X, y, mask, sample_weights, _ = build_dataset(df)
     print(f"[train_nn] dataset shape: {X.shape} positives (P1 wins): {int(np.sum(y))}")
     print(f"[train_nn] long_window={long_window}, short_window={short_window}, alpha={alpha:.2f}")
@@ -252,16 +343,18 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
     print(f"[train_nn] PRIMA pre-processing NN: weights mean={np.mean(sample_weights):.2f}, max={np.max(sample_weights):.2f}")
     
     # ===== PREPARAZIONE SPECIFICA PER RETE NEURALE =====
-    # Riduce sample weights, rimuove duplicati, normalizza features
+    # RIMOSSA normalizzazione - causava problemi di segno e predizioni sbagliate
+    # La NN userà le stesse features grezze del BDT
     # NON INFLUISCE SUL BDT!
     X, y, sample_weights, scaler = prepare_nn_data(
         X, y, sample_weights,
-        remove_duplicates=True,    # Rimuove punti duplicati
-        normalize=True,            # StandardScaler per features
-        weight_cap=3.0             # Cap sui weights (era ~10-20, ora max 3)
+        remove_duplicates=True,    # Rimuove punti duplicati (3 decimali)
+        normalize=False,           # NORMALIZZAZIONE DISABILITATA - causava bias verso P2
+        weight_cap=6.0             # Cap sui weights
     )
     print(f"[train_nn] DOPO pre-processing NN: weights mean={np.mean(sample_weights):.2f}, max={np.max(sample_weights):.2f}")
-    print(f"[train_nn] Dataset finale: {X.shape[0]} punti")
+    print(f"[train_nn] Dataset finale: {X.shape[0]} punti, {X.shape[1]} features")
+    print(f"[train_nn] Features NON normalizzate - usando valori grezzi come BDT")
     
     # Train/test split (no stratify - we're working with point-level data, not match-level)
     X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
@@ -283,14 +376,23 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
     model = TennisNN(input_dim=X.shape[1], hidden_dims=hidden_dims, dropout=dropout, temperature=temperature).to(device)
     print(f"[train_nn] Model parameters: {sum(p.numel() for p in model.parameters())}")
     print(f"[train_nn] Temperature scaling: {temperature}")
+    
+    # Calcola pesi delle classi per bilanciare
+    n_pos = np.sum(y_train)
+    n_neg = len(y_train) - n_pos
+    pos_weight = n_neg / n_pos if n_pos > 0 else 1.0
+    print(f"[train_nn] Class balance: {n_pos:.0f} positives, {n_neg:.0f} negatives, pos_weight={pos_weight:.2f}")
+    
+    # Use BCEWithLogitsLoss con pos_weight per bilanciare le classi
     criterion = nn.BCELoss(reduction='none')  # We'll apply weights manually
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)  # L2 regularization
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)  # Più L2 reg
     
     # Learning rate scheduler più aggressivo
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=8)
     
     print(f"[train_nn] Training for max {epochs} epochs (early stopping patience={early_stopping_patience})...")
     print(f"[train_nn] Architecture: {X.shape[1]} -> {' -> '.join(map(str, hidden_dims))} -> 1")
+    print(f"[train_nn] Batch size: {batch_size}, Learning rate: {learning_rate}")
     
     best_val_loss = float('inf')
     best_auc = 0
@@ -309,7 +411,12 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
             
             optimizer.zero_grad()
             outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
+            
+            # Label smoothing per ridurre overconfidence: 
+            # 0 → 0.05, 1 → 0.95
+            smoothed_y = batch_y * 0.9 + 0.05
+            
+            loss = criterion(outputs, smoothed_y)
             weighted_loss = (loss * batch_w).mean()
             weighted_loss.backward()
             optimizer.step()
@@ -421,7 +528,7 @@ def load_nn_model(model_path):
         model_path: Path to saved model JSON
     
     Returns:
-        Loaded PyTorch model in eval mode
+        tuple: (model, scaler_params) where scaler_params is dict with 'mean' and 'scale' or None
     """
     with open(model_path, 'r') as f:
         model_data = json.load(f)
@@ -439,25 +546,40 @@ def load_nn_model(model_path):
     model.load_state_dict(state_dict)
     model.eval()
     
+    # Load scaler parameters if available
+    scaler_params = None
+    if 'scaler_mean' in model_data and model_data['scaler_mean'] is not None:
+        scaler_params = {
+            'mean': np.array(model_data['scaler_mean']),
+            'scale': np.array(model_data['scaler_scale'])
+        }
+    
+    # Store scaler in model for easy access
+    model.scaler_params = scaler_params
+    
     return model
 
 
 def predict_nn(model, X):
     """
     Make predictions with neural network model.
+    NON applica normalizzazione - il modello usa features grezze come BDT.
     
     Args:
         model: Trained TennisNN model
-        X: Feature matrix (numpy array or single row)
+        X: Feature matrix (numpy array or single row) - valori grezzi
     
     Returns:
-        Predictions as numpy array
+        P(P1 wins) predictions as numpy array
     """
     model.eval()
     
     # Handle single prediction
     if len(X.shape) == 1:
         X = X.reshape(1, -1)
+    
+    # NON applicare normalizzazione - il modello è allenato su dati grezzi
+    # (la normalizzazione causava problemi di predizione)
     
     with torch.no_grad():
         X_tensor = torch.FloatTensor(X)

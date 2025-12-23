@@ -1146,6 +1146,18 @@ def add_leverage_and_momentum(df: pd.DataFrame, alpha: float) -> pd.DataFrame:
     
     # Compute weighted momentum using EWMA
     # Accumulate across entire match to capture psychological momentum
+    # pandas.Series.ewm enforces 0 < alpha <= 1, while our momentum helper
+    # supports alpha > 1 (for faster decay). Use the custom implementation
+    # when alpha is outside the pandas bounds.
+    if alpha <= 0:
+        raise ValueError("alpha must be > 0")
+
+    # TEMPORARY FIX: Always use pandas ewm (alpha <= 1.0) to avoid blocking
+    # The custom implementation has a bug that causes infinite loop
+    if alpha > 1.0:
+        print(f"[WARNING] alpha={alpha} > 1.0, clamping to 1.0 to avoid blocking")
+        alpha = 1.0
+    
     df["momentum"] = (
         df.groupby(MATCH_COL)["weighted_leverage"]
           .transform(lambda x: x.ewm(alpha=alpha, adjust=False).mean())
@@ -1190,6 +1202,19 @@ def build_dataset(df: pd.DataFrame):
         """
     df = df.copy()
     feature_cols = MATCH_FEATURE_COLUMNS.copy()
+    
+    # Filtra solo le colonne che esistono nel DataFrame
+    # Le break features sono opzionali (solo per NN, non per BDT)
+    available_feature_cols = [col for col in feature_cols if col in df.columns]
+    
+    if len(available_feature_cols) < len(feature_cols):
+        missing_cols = set(feature_cols) - set(available_feature_cols)
+        # Solo avvisa per colonne non-break
+        non_break_missing = [c for c in missing_cols if not c.startswith('break') and not c.endswith('_breaks')]
+        if non_break_missing:
+            print(f"[build_dataset] Warning: Missing columns {non_break_missing}")
+    
+    feature_cols = available_feature_cols
 
     # Determine sets required to win for each match (best-of-3 vs best-of-5)
     # Defaults to best-of-5 (3 sets) if original set count is unavailable.
@@ -1325,9 +1350,10 @@ def build_dataset(df: pd.DataFrame):
                                        np.where(min_sets_to_victory <= 2.0, 1.5, 1.0))
         
         weights_all = weights_all * set_proximity_weight
-        print(f"[build_dataset] Set proximity weights - 1 set: {np.sum(min_sets_to_victory <= 1.0)}, "
-              f"2 sets: {np.sum((min_sets_to_victory > 1.0) & (min_sets_to_victory <= 2.0))}, "
-              f"3+ sets: {np.sum(min_sets_to_victory > 2.0)}")
+        # Questo print è troppo verbose durante point-by-point prediction
+        # print(f"[build_dataset] Set proximity weights - 1 set: {np.sum(min_sets_to_victory <= 1.0)}, "
+        #       f"2 sets: {np.sum((min_sets_to_victory > 1.0) & (min_sets_to_victory <= 2.0))}, "
+        #       f"3+ sets: {np.sum(min_sets_to_victory > 2.0)}")
     
     # Boost weights based on match competitiveness
     # Competitive matches (4-5 sets) are underrepresented, so upweight them
@@ -1358,8 +1384,10 @@ def build_dataset(df: pd.DataFrame):
     y_hard_masked = y_hard[mask]
     sample_weights = weights_all[mask]
 
-    # Return both soft labels (for training) and hard labels (for evaluation)
-    return X, y_soft_masked, mask, sample_weights, y_hard_masked
+    # CRITICAL FIX: Use HARD labels (0/1) for classification, not soft blended labels
+    # Soft labels were confusing the network and causing wrong predictions
+    # Return hard labels as the primary target
+    return X, y_hard_masked, mask, sample_weights, y_hard_masked
 
 
 def build_dataset_point_level(df: pd.DataFrame):
