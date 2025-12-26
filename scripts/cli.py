@@ -3,6 +3,7 @@ import argparse
 
 from .model import train_model
 from .model_nn import train_nn_model
+from .new_model_nn import train_new_model
 from .model_point import train_point_model
 from .prediction import run_prediction
 from .hyperopt import run_hyperopt
@@ -29,10 +30,14 @@ def main():
                          help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
     train_p.add_argument("--model-type", choices=["xgboost", "nn"], default="xgboost",
                          help="Model type: 'xgboost' (gradient boosting, default) or 'nn' (neural network)")
-    train_p.add_argument("--epochs", type=int, default=100,
-                         help="Number of epochs for neural network training (default: 100)")
-    train_p.add_argument("--batch-size", type=int, default=512,
-                         help="Batch size for neural network training (default: 512)")
+    train_p.add_argument("--epochs", type=int, default=200,
+                         help="Number of epochs for neural network training (default: 200)")
+    train_p.add_argument("--batch-size", type=int, default=1024,
+                         help="Batch size for neural network training (default: 1024)")
+    train_p.add_argument("--clean-features", action="store_true",
+                         help="Use clean feature set (25 features) for neural network instead of full set (45). Recommended for better learning of tennis rules.")
+    train_p.add_argument("--new-model", action="store_true",
+                         help="Use new multi-task model with distance features (23 features). Predicts match, set, and game outcomes simultaneously to learn tennis hierarchy.")
 
     # TRAIN-POINT (new)
     train_point_p = subparsers.add_parser("train-point", help="Train point-level model (predicts point winner)")
@@ -93,8 +98,17 @@ def main():
         if model_type == 'nn':
             epochs = getattr(args, 'epochs', 100)
             batch_size = getattr(args, 'batch_size', 512)
-            train_nn_model(args.files, args.model_out, config_path=args.config, 
-                          gender=gender, epochs=epochs, batch_size=batch_size)
+            use_clean_features = getattr(args, 'clean_features', False)
+            use_new_model = getattr(args, 'new_model', False)
+            
+            if use_new_model:
+                print("[CLI] Using NEW multi-task model with distance features")
+                train_new_model(args.files, args.model_out, gender=gender, 
+                              epochs=epochs, batch_size=batch_size)
+            else:
+                train_nn_model(args.files, args.model_out, config_path=args.config, 
+                              gender=gender, epochs=epochs, batch_size=batch_size,
+                              use_clean_features=use_clean_features)
         else:
             train_model(args.files, args.model_out, config_path=args.config, gender=gender)
     

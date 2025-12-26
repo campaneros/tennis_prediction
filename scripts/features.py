@@ -28,8 +28,8 @@ MATCH_FEATURE_COLUMNS = [
     "GameNo",
     "PointNumber",
     "point_importance",
-    "P1SetsWon",  # NEW: Number of sets won by P1
-    "P2SetsWon",  # NEW: Number of sets won by P2
+    "P1SetsWon",
+    "P2SetsWon",
     "SetsWonDiff",
     "SetsWonAdvantage",
     "SetWinProbPrior",
@@ -38,11 +38,29 @@ MATCH_FEATURE_COLUMNS = [
     "is_decider_tied",
     "DistanceToMatchEnd",
     "MatchFinished",
-    "is_tiebreak",  # Binary indicator for tiebreak
-    "is_decisive_tiebreak",  # Binary for decisive tiebreak (2-2 or 1-1 sets)
-    "tiebreak_score_diff",  # Score differential in tiebreak (normalized)
-    "tiebreak_win_proximity",  # How close to winning tiebreak (exponential)
-    "is_tiebreak_late_stage",  # Binary: is score sum >= 10?
+    "is_tiebreak",
+    "is_decisive_tiebreak",
+    "tiebreak_score_diff",
+    "tiebreak_win_proximity",
+    "is_tiebreak_late_stage",
+    # Break/Hold features - CRITICAL per distinguere importanza dei game
+    "P1BreaksWon",
+    "P2BreaksWon",
+    "BreaksDiff",
+    "P1HoldsWon",
+    "P2HoldsWon",
+    "HoldRate_P1",
+    "HoldRate_P2",
+    "BreakRate_P1",
+    "BreakRate_P2",
+    "weighted_game_diff",
+    # Early match indicator
+    "is_early_match",
+    # Set situation indicators - binari e chiari
+    "is_p1_ahead_sets",  # P1 ha vinto più set
+    "is_p2_ahead_sets",  # P2 ha vinto più set
+    "is_sets_tied",      # Set pari (stesso numero)
+    "sets_magnitude",    # Magnitudine del vantaggio (0, 1, 2)
 ]
 
 # Point-level predictions reuse the exact same feature ordering.
@@ -836,6 +854,16 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
                 rank_boost = 0.0
 
         prior = base + rank_boost
+        
+        # DAMPEN prior all'inizio del match: quando ci sono pochi game giocati,
+        # il prior dovrebbe convergere verso 0.5 (neutrale)
+        # Questo evita che la rete ignori Game_Diff all'inizio
+        total_games = row.get('P1GamesWon', 0.0) + row.get('P2GamesWon', 0.0)
+        if total_games <= 6:  # primi 6 game del match
+            # Blend con 0.5: più game giocati, meno blending
+            blend_to_neutral = (6 - total_games) / 6.0  # 1.0 a inizio, 0.0 dopo 6 game
+            prior = prior * (1 - blend_to_neutral) + 0.5 * blend_to_neutral
+        
         return float(np.clip(prior, 0.05, 0.95))
 
     df['SetWinProbPrior'] = df.apply(compute_set_win_prior, axis=1)
@@ -884,6 +912,59 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
                     df.loc[tied_mask, col] * dampen_factor + 
                     df.loc[tied_mask, short_col] * (1 - dampen_factor)
                 )
+    
+    # DECISIVE TIEBREAK DAMPENING: nel tiebreak del 5° set (2-2), la storia del match
+    # è quasi irrilevante - conta solo lo score del tiebreak
+    if 'is_decisive_tiebreak' in df.columns:
+        decisive_tb_mask = df['is_decisive_tiebreak'] == 1.0
+        if decisive_tb_mask.any():
+            # Nel tiebreak decisivo, dampa FORTEMENTE tutte le feature cumulative
+            # Solo lo score del tiebreak e le statistiche recenti contano
+            tb_dampen = 0.01  # 99% riduzione delle feature storiche
+            
+            # Dampa momentum quasi a zero
+            if 'momentum' in df.columns:
+                df.loc[decisive_tb_mask, 'momentum'] = df.loc[decisive_tb_mask, 'momentum'] * tb_dampen
+            
+            # Dampa break/hold differentials (la storia del match non conta più)
+            for col in ['BreaksDiff', 'Game_Diff', 'CurrentSetGamesDiff', 'weighted_game_diff']:
+                if col in df.columns:
+                    df.loc[decisive_tb_mask, col] = df.loc[decisive_tb_mask, col] * tb_dampen
+            
+            # Serve stats: usa solo short window
+            if 'P_srv_win_short' in df.columns and 'P_srv_win_long' in df.columns:
+                df.loc[decisive_tb_mask, 'P_srv_win_long'] = df.loc[decisive_tb_mask, 'P_srv_win_short']
+            if 'P_srv_lose_short' in df.columns and 'P_srv_lose_long' in df.columns:
+                df.loc[decisive_tb_mask, 'P_srv_lose_long'] = df.loc[decisive_tb_mask, 'P_srv_lose_short']
+            
+            print(f"[add_additional_features] Dampened {decisive_tb_mask.sum()} decisive tiebreak points")
+
+    # Early match indicator: primi 2-3 game quando le statistiche cumulative non sono affidabili
+    # In questa fase, Game_Diff e break counts sono più informativi del momentum/storia
+    df['is_early_match'] = 0.0
+    total_games_played = df['P1GamesWon'] + df['P2GamesWon'] if 'P1GamesWon' in df.columns and 'P2GamesWon' in df.columns else 0
+    early_mask = (df['SetNo'] == 1) & (total_games_played <= 4)
+    df.loc[early_mask, 'is_early_match'] = 1.0
+    
+    # Set situation indicators - binari e CHIARI per la rete
+    # Non usiamo SetsWonDiff con segno perché la rete si confonde
+    # Usiamo indicatori separati: chi è avanti? Di quanto?
+    if 'P1SetsWon' in df.columns and 'P2SetsWon' in df.columns:
+        p1_sets = df['P1SetsWon']
+        p2_sets = df['P2SetsWon']
+        
+        # Indicatori binari: 1.0 se vera, 0.0 altrimenti
+        df['is_p1_ahead_sets'] = (p1_sets > p2_sets).astype(float)
+        df['is_p2_ahead_sets'] = (p2_sets > p1_sets).astype(float)
+        df['is_sets_tied'] = (p1_sets == p2_sets).astype(float)
+        
+        # Magnitudine del vantaggio (sempre positiva): 0, 1, o 2
+        df['sets_magnitude'] = np.abs(p1_sets - p2_sets).astype(float)
+    else:
+        df['is_p1_ahead_sets'] = 0.0
+        df['is_p2_ahead_sets'] = 0.0
+        df['is_sets_tied'] = 1.0  # Default: pari
+        df['sets_magnitude'] = 0.0
 
     # Add MatchFinished feature: 1 if match is over after this point, 0 otherwise
     # This helps the model learn that when the match ends, probability should be 0 or 1
@@ -1104,6 +1185,87 @@ def add_rolling_serve_return_features(
     df["P_srv_win"] = df["P_srv_win_long"]
     df["P_srv_lose"] = df["P_srv_lose_long"]
 
+    return df
+
+
+def add_break_hold_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggiungi features che distinguono break (vincere in risposta) da hold (vincere al servizio).
+    
+    Features aggiunte:
+    - P1BreaksWon: numero di break vinti da P1 (game vinti quando P2 serviva)
+    - P2BreaksWon: numero di break vinti da P2 (game vinti quando P1 serviva)
+    - BreaksDiff: P1BreaksWon - P2BreaksWon (più importante di Game_Diff)
+    - P1HoldsWon: numero di hold di P1 (game vinti quando P1 serviva)
+    - P2HoldsWon: numero di hold di P2
+    - HoldRate_P1: percentuale di servizi tenuti da P1 (resilienza)
+    - HoldRate_P2: percentuale di servizi tenuti da P2
+    - BreakRate_P1: percentuale di break ottenuti da P1 (aggressività)
+    - BreakRate_P2: percentuale di break ottenuti da P2
+    - weighted_game_diff: Game_Diff dove i break contano 2x
+    """
+    df = df.copy()
+    
+    # Identifichiamo chi ha vinto ogni game completato
+    # Un game è completato quando GameNo cambia
+    df['game_completed'] = (df['GameNo'] != df['GameNo'].shift(1))
+    
+    # Il vincitore del game è chi ha vinto l'ultimo punto del game precedente
+    # Otteniamo questo guardando GAME_WINNER_COL della riga PRECEDENTE
+    df['prev_game_winner'] = df[GAME_WINNER_COL].shift(1)
+    df['prev_server'] = df[SERVER_COL].shift(1)
+    
+    # Un break avviene quando il winner del game NON era il server
+    # Hold avviene quando il winner del game ERA il server
+    df['was_break'] = (df['game_completed']) & (df['prev_game_winner'] != df['prev_server'])
+    df['was_hold'] = (df['game_completed']) & (df['prev_game_winner'] == df['prev_server'])
+    
+    # Conta break e hold per match, cumulativamente
+    # P1 break = P1 vince quando P2 serviva (prev_game_winner=1, prev_server=2)
+    # P2 break = P2 vince quando P1 serviva (prev_game_winner=2, prev_server=1)
+    df['p1_break_this_game'] = (df['was_break']) & (df['prev_game_winner'] == 1)
+    df['p2_break_this_game'] = (df['was_break']) & (df['prev_game_winner'] == 2)
+    df['p1_hold_this_game'] = (df['was_hold']) & (df['prev_game_winner'] == 1)
+    df['p2_hold_this_game'] = (df['was_hold']) & (df['prev_game_winner'] == 2)
+    
+    # Cumulative sum per match
+    df['P1BreaksWon'] = df.groupby(MATCH_COL)['p1_break_this_game'].cumsum().astype(float)
+    df['P2BreaksWon'] = df.groupby(MATCH_COL)['p2_break_this_game'].cumsum().astype(float)
+    df['P1HoldsWon'] = df.groupby(MATCH_COL)['p1_hold_this_game'].cumsum().astype(float)
+    df['P2HoldsWon'] = df.groupby(MATCH_COL)['p2_hold_this_game'].cumsum().astype(float)
+    
+    # Break difference (più importante di game diff)
+    df['BreaksDiff'] = df['P1BreaksWon'] - df['P2BreaksWon']
+    
+    # Serve opportunities: quante volte ogni giocatore ha servito
+    # Approssimato come numero di game completati diviso 2 (si alternano)
+    df['total_games_completed'] = df.groupby(MATCH_COL)['game_completed'].cumsum().astype(float)
+    df['P1_serve_opportunities'] = (df['total_games_completed'] / 2.0).apply(np.floor)
+    df['P2_serve_opportunities'] = (df['total_games_completed'] / 2.0).apply(np.ceil)
+    
+    # Hold rates (resilienza): % di servizi tenuti
+    # +1 smoothing per evitare divisione per zero
+    df['HoldRate_P1'] = (df['P1HoldsWon'] + 1.0) / (df['P1_serve_opportunities'] + 2.0)
+    df['HoldRate_P2'] = (df['P2HoldsWon'] + 1.0) / (df['P2_serve_opportunities'] + 2.0)
+    
+    # Break rates (aggressività): % di break ottenuti quando avversario serviva
+    df['BreakRate_P1'] = (df['P1BreaksWon'] + 1.0) / (df['P2_serve_opportunities'] + 2.0)
+    df['BreakRate_P2'] = (df['P2BreaksWon'] + 1.0) / (df['P1_serve_opportunities'] + 2.0)
+    
+    # Weighted game diff: i break contano 2x rispetto agli hold
+    # Questo dà più peso ai momenti cruciali
+    if 'Game_Diff' in df.columns:
+        # Game_Diff normale + extra weight per break
+        df['weighted_game_diff'] = df['Game_Diff'] + df['BreaksDiff'] * 0.5
+    else:
+        df['weighted_game_diff'] = df['BreaksDiff']
+    
+    # Cleanup temporary columns
+    df = df.drop(columns=['game_completed', 'prev_game_winner', 'prev_server', 
+                          'was_break', 'was_hold', 'p1_break_this_game', 'p2_break_this_game',
+                          'p1_hold_this_game', 'p2_hold_this_game', 'total_games_completed',
+                          'P1_serve_opportunities', 'P2_serve_opportunities'])
+    
     return df
 
 
@@ -1443,3 +1605,356 @@ def build_dataset_point_level(df: pd.DataFrame):
     sample_weights = weights_all[mask]
 
     return X, y, mask, sample_weights
+
+
+def build_clean_features_nn(df: pd.DataFrame):
+    """
+    Costruisce features PULITE per la rete neurale, eliminando duplicati e 
+    mantenendo solo quelle essenziali per imparare le regole del tennis.
+    
+    Features progettate per far capire alla rete:
+    1. Come funziona un GAME (punti 0-15-30-40-deuce)
+    2. Come funziona un SET (vincere 6+ game con vantaggio di 2)
+    3. Come funziona un MATCH (vincere 2/3 set per donne, 3/5 per uomini)
+    4. Come funziona il TIE-BREAK (punteggio numerico, primo a 7 con vantaggio di 2)
+    5. Riconoscere PUNTI CRITICI (break/set/match point)
+    
+    Features (25 totali - RITORNO ALLE ORIGINALI):
+    CORE SCORING (6):
+        - P1_points: punti nel game corrente (0-4, dove 4=vantaggio)
+        - P2_points: punti nel game corrente (0-4)
+        - P1_games: game vinti nel set corrente (0-13)
+        - P2_games: game vinti nel set corrente (0-13)
+        - P1_sets: set vinti (0-3)
+        - P2_sets: set vinti (0-3)
+    
+    CONTEXT (4):
+        - point_server: chi sta servendo (1 o 2)
+        - set_number: numero del set corrente (1-5)
+        - game_number: numero del game corrente (1-40)
+        - point_number: numero del punto nel match (1-500)
+    
+    TIE-BREAK (6):
+        - is_tiebreak: 1 se siamo in tie-break, 0 altrimenti
+        - is_decisive_tiebreak: 1 se tie-break del set decisivo
+        - tb_p1_points: punti di P1 nel tie-break (0-20)
+        - tb_p2_points: punti di P2 nel tie-break (0-20)
+        - tb_p1_needs_to_win: quanti punti mancano a P1 per vincere (0-7)
+        - tb_p2_needs_to_win: quanti punti mancano a P2 per vincere (0-7)
+        - tb_points_diff: (P1_TB - P2_TB)/7 NORMALIZZATA (range -1 a +1)
+        - tb_p1_is_leading: 1 se P1 avanti nel TB, 0 altrimenti (BINARIA)
+        - tb_p1_one_point_away: 1 se P1 a un punto dal vincere TB
+        - tb_p2_one_point_away: 1 se P2 a un punto dal vincere TB
+    
+    MATCH FORMAT (3):
+        - is_best_of_5: 1 se match al meglio di 5 set, 0 se best-of-3
+        - sets_to_win: quanti set servono per vincere (2 o 3)
+        - is_final_set: 1 se siamo nell'ultimo set possibile
+    
+    PERFORMANCE (6):
+        - P_srv_win_long: probabilità di vincere punto al servizio (finestra lunga)
+        - P_srv_lose_long: probabilità quando si riceve (finestra lunga)
+        - P_srv_win_short: probabilità al servizio (finestra corta, real-time)
+        - P_srv_lose_short: probabilità in ricezione (finestra corta)
+        - p1_momentum: momentum di P1 (media pesata della leverage)
+        - p2_momentum: momentum di P2
+    
+    CRITICAL POINTS (6) - ESPLICITI:
+        - is_p1_break_point: P1 in risposta può vincere il game
+        - is_p2_break_point: P2 in risposta può vincere il game
+        - is_p1_set_point: P1 può vincere il set
+        - is_p2_set_point: P2 può vincere il set
+        - is_p1_match_point: P1 può vincere il match
+        - is_p2_match_point: P2 può vincere il match
+    
+    Target:
+        - p1_wins_match: 1 se P1 vince il match, 0 altrimenti
+    """
+    df = df.copy()
+    
+    # Helper per convertire punteggio tennis a numerico
+    def score_to_numeric(score):
+        if pd.isna(score):
+            return 0
+        score_str = str(score).strip().upper()
+        score_map = {'0': 0, '15': 1, '30': 2, '40': 3, 'AD': 4, 'A': 4}
+        # Se è già numerico (tie-break), restituiscilo
+        try:
+            return int(score_str)
+        except ValueError:
+            return score_map.get(score_str, 0)
+    
+    # 1. CORE SCORING - rappresentazione esplicita del punteggio
+    # Usa colonne esistenti o crea con valori di default
+    if 'P1Score' in df.columns:
+        df['P1_points'] = df['P1Score'].apply(score_to_numeric).astype(float)
+    else:
+        df['P1_points'] = 0.0
+    
+    if 'P2Score' in df.columns:
+        df['P2_points'] = df['P2Score'].apply(score_to_numeric).astype(float)
+    else:
+        df['P2_points'] = 0.0
+    
+    df['P1_games'] = pd.to_numeric(df['P1GamesWon'], errors='coerce').fillna(0).astype(float) if 'P1GamesWon' in df.columns else 0.0
+    df['P2_games'] = pd.to_numeric(df['P2GamesWon'], errors='coerce').fillna(0).astype(float) if 'P2GamesWon' in df.columns else 0.0
+    df['P1_sets'] = pd.to_numeric(df['P1SetsWon'], errors='coerce').fillna(0).astype(float) if 'P1SetsWon' in df.columns else 0.0
+    df['P2_sets'] = pd.to_numeric(df['P2SetsWon'], errors='coerce').fillna(0).astype(float) if 'P2SetsWon' in df.columns else 0.0
+    
+    # 2. CONTEXT
+    df['point_server'] = pd.to_numeric(df[SERVER_COL], errors='coerce').fillna(1).astype(float) if SERVER_COL in df.columns else 1.0
+    df['set_number'] = pd.to_numeric(df['SetNo'], errors='coerce').fillna(1).astype(float) if 'SetNo' in df.columns else 1.0
+    df['game_number'] = pd.to_numeric(df['GameNo'], errors='coerce').fillna(1).astype(float) if 'GameNo' in df.columns else 1.0
+    df['point_number'] = pd.to_numeric(df['PointNumber'], errors='coerce').fillna(1).astype(float) if 'PointNumber' in df.columns else 1.0
+    
+    # match_progress: progresso del match (0-1) per dare contesto temporale
+    # Calcola per ogni match quanti punti totali ci sono, poi normalizza
+    max_points_per_match = df.groupby(MATCH_COL)['point_number'].transform('max')
+    df['match_progress'] = (df['point_number'] / max_points_per_match).clip(0, 1).astype(float)
+    
+    # 3. TIE-BREAK features
+    # IMPORTANTE: Regola Wimbledon 2019+
+    # - Set 1-4: tie-break al 6-6
+    # - Set 5 (decisivo): tie-break al 12-12
+    
+    # Determina se siamo nel set decisivo (5° in best-of-5, 3° in best-of-3)
+    sets_tied = (df['P1_sets'] == df['P2_sets'])
+    sets_played = df['P1_sets'] + df['P2_sets']
+    
+    # Best-of-5: set decisivo è quando set_number >= 3 e set pari
+    # Best-of-3: set decisivo è quando set_number >= 2 e set pari
+    is_best_of_5_decisive = (df['set_number'] >= 3) & sets_tied & (sets_played >= 2)
+    is_best_of_3_decisive = (df['set_number'] >= 2) & sets_tied & (sets_played >= 1)
+    is_final_set_potential = is_best_of_5_decisive | is_best_of_3_decisive
+    
+    # Determina soglia per tie-break: 12-12 nel set finale, 6-6 altrimenti
+    tb_threshold = np.where(is_final_set_potential, 12, 6)
+    is_games_at_tb_threshold = (df['P1_games'] == df['P2_games']) & (df['P1_games'] >= tb_threshold)
+    
+    # Determina se i punteggi sono numerici (tie-break) o tennis standard
+    if 'P1Score' in df.columns:
+        p1_score_raw = df['P1Score'].astype(str).str.strip().str.upper()
+    else:
+        p1_score_raw = pd.Series('0', index=df.index)
+    tennis_scores = {'0', '15', '30', '40', 'AD', 'A'}
+    is_numeric_score = ~p1_score_raw.isin(tennis_scores)
+    
+    df['is_tiebreak'] = (is_games_at_tb_threshold & is_numeric_score).astype(float)
+    
+    # Tie-break decisivo: tie-break nel set decisivo (12-12 nel 5° set)
+    df['is_decisive_tiebreak'] = (df['is_tiebreak'] == 1.0) & is_final_set_potential
+    
+    # Punteggio nel tie-break (quando in tie-break, i punti sono già numerici)
+    df['tb_p1_points'] = np.where(df['is_tiebreak'] == 1.0, df['P1_points'], 0.0)
+    df['tb_p2_points'] = np.where(df['is_tiebreak'] == 1.0, df['P2_points'], 0.0)
+    
+    # Quanto manca per vincere il tie-break (serve 7+ con vantaggio di 2)
+    # Semplificato: se < 6, mancano (7-punti); se >= 6, serve vantaggio di 2
+    def points_needed_to_win_tb(my_points, opp_points):
+        my_points = np.maximum(my_points, 0)
+        opp_points = np.maximum(opp_points, 0)
+        
+        # Se sotto 6, manca (7 - punti)
+        needs = 7.0 - my_points
+        
+        # Se sopra 6, serve vantaggio di 2
+        # Esempio: 7-6 → serve ancora 1 punto, 6-7 → serve 2 punti (pareggiare + vantaggio)
+        needs = np.where(
+            (my_points >= 6) & (opp_points >= 6),
+            np.maximum(0, opp_points - my_points + 2),  # deve superare di 2
+            needs
+        )
+        
+        return np.clip(needs, 0, 7)
+    
+    df['tb_p1_needs_to_win'] = np.where(
+        df['is_tiebreak'] == 1.0,
+        points_needed_to_win_tb(df['tb_p1_points'].values, df['tb_p2_points'].values),
+        0.0
+    )
+    df['tb_p2_needs_to_win'] = np.where(
+        df['is_tiebreak'] == 1.0,
+        points_needed_to_win_tb(df['tb_p2_points'].values, df['tb_p1_points'].values),
+        0.0
+    )
+    
+    # Differenza punti nel tie-break (NORMALIZZATA per facilitare apprendimento)
+    raw_diff = df['tb_p1_points'] - df['tb_p2_points']
+    df['tb_points_diff'] = np.where(
+        df['is_tiebreak'] == 1.0,
+        raw_diff / 7.0,  # Normalizza: range tipico -7 a +7 diventa -1 a +1
+        0.0
+    )
+    
+    # Chi è in vantaggio nel tie-break (BINARIA, più facile da imparare)
+    df['tb_p1_is_leading'] = np.where(
+        df['is_tiebreak'] == 1.0,
+        (raw_diff > 0).astype(float),
+        0.0
+    )
+    
+    # Chi è a un punto dal vincere il tie-break (feature CRITICA)
+    df['tb_p1_one_point_away'] = np.where(
+        df['is_tiebreak'] == 1.0,
+        (df['tb_p1_needs_to_win'] <= 1.0).astype(float),
+        0.0
+    )
+    df['tb_p2_one_point_away'] = np.where(
+        df['is_tiebreak'] == 1.0,
+        (df['tb_p2_needs_to_win'] <= 1.0).astype(float),
+        0.0
+    )
+    
+    # 4. MATCH FORMAT
+    # Determina formato dal numero massimo di set nel match
+    if 'SetNo_original' in df.columns:
+        max_set_per_match = df.groupby(MATCH_COL)['SetNo_original'].transform('max')
+    else:
+        max_set_per_match = df.groupby(MATCH_COL)['set_number'].transform('max')
+    
+    df['is_best_of_5'] = (max_set_per_match >= 4).astype(float)
+    df['sets_to_win'] = np.where(df['is_best_of_5'] == 1.0, 3.0, 2.0)
+    
+    # Set finale: siamo nel set che potrebbe decidere il match
+    # Best-of-5: set 3, 4, o 5 con almeno 2 set giocati
+    # Best-of-3: set 2 o 3 con almeno 1 set giocato
+    is_potentially_final = (
+        ((df['is_best_of_5'] == 1.0) & (df['set_number'] >= 3) & (sets_played >= 2)) |
+        ((df['is_best_of_5'] == 0.0) & (df['set_number'] >= 2) & (sets_played >= 1))
+    )
+    df['is_final_set'] = is_potentially_final.astype(float)
+    
+    # 5. PERFORMANCE features - prendiamo quelle già calcolate
+    performance_cols = [
+        'P_srv_win_long', 'P_srv_lose_long', 
+        'P_srv_win_short', 'P_srv_lose_short'
+    ]
+    for col in performance_cols:
+        if col not in df.columns:
+            df[col] = 0.5  # default neutro
+    
+    # Momentum
+    if 'P1Momentum' in df.columns and 'P2Momentum' in df.columns:
+        df['p1_momentum'] = pd.to_numeric(df['P1Momentum'], errors='coerce').fillna(0).astype(float)
+        df['p2_momentum'] = pd.to_numeric(df['P2Momentum'], errors='coerce').fillna(0).astype(float)
+    else:
+        df['p1_momentum'] = 0.0
+        df['p2_momentum'] = 0.0
+    
+    # 6. CRITICAL POINTS features - ESPLICITE
+    # Usa le features già calcolate da add_additional_features
+    # Se non esistono, creale basandoti sulle regole del tennis
+    
+    # Break point: ricevitore può vincere il game
+    if 'is_break_point' not in df.columns:
+        # Calcola manualmente: ricevitore a 40 o advantage
+        df['is_break_point'] = 0.0
+    else:
+        df['is_break_point'] = pd.to_numeric(df['is_break_point'], errors='coerce').fillna(0).astype(float)
+    
+    # Set point: giocatore può vincere il set
+    if 'is_set_point' not in df.columns:
+        df['is_set_point'] = 0.0
+    else:
+        df['is_set_point'] = pd.to_numeric(df['is_set_point'], errors='coerce').fillna(0).astype(float)
+    
+    # Match point: giocatore può vincere il match
+    if 'is_match_point' not in df.columns:
+        df['is_match_point'] = 0.0
+    else:
+        df['is_match_point'] = pd.to_numeric(df['is_match_point'], errors='coerce').fillna(0).astype(float)
+    
+    # Separa per giocatore guardando il punteggio e chi serve
+    # P1 break point = P1 in risposta può vincere il game (server=2, P1 a 40+)
+    # P2 break point = P2 in risposta può vincere il game (server=1, P2 a 40+)
+    server = df['point_server']
+    
+    # Score helper per determinare chi è avanti
+    p1_ahead_in_game = df['P1_points'] > df['P2_points']
+    p2_ahead_in_game = df['P2_points'] > df['P1_points']
+    p1_can_win_game = (df['P1_points'] >= 3) & p1_ahead_in_game
+    p2_can_win_game = (df['P2_points'] >= 3) & p2_ahead_in_game
+    
+    # Break point: ricevitore può vincere il game
+    df['is_p1_break_point'] = ((server == 2) & p1_can_win_game).astype(float)
+    df['is_p2_break_point'] = ((server == 1) & p2_can_win_game).astype(float)
+    
+    # Set point: giocatore può vincere il set (5+ game, avanti di 1+)
+    p1_can_win_set = (df['P1_games'] >= 5) & (df['P1_games'] >= df['P2_games'] + 1)
+    p2_can_win_set = (df['P2_games'] >= 5) & (df['P2_games'] >= df['P1_games'] + 1)
+    
+    df['is_p1_set_point'] = (p1_can_win_set & p1_can_win_game).astype(float)
+    df['is_p2_set_point'] = (p2_can_win_set & p2_can_win_game).astype(float)
+    
+    # Match point: giocatore a un set dalla vittoria E può vincere il set
+    p1_one_set_away = df['P1_sets'] >= (df['sets_to_win'] - 1)
+    p2_one_set_away = df['P2_sets'] >= (df['sets_to_win'] - 1)
+    
+    df['is_p1_match_point'] = (p1_one_set_away & df['is_p1_set_point'] == 1.0).astype(float)
+    df['is_p2_match_point'] = (p2_one_set_away & df['is_p2_set_point'] == 1.0).astype(float)
+    
+    # Lista delle feature pulite in ordine canonico
+    CLEAN_FEATURE_COLUMNS = [
+        # Core scoring (6)
+        'P1_points', 'P2_points',
+        'P1_games', 'P2_games',
+        'P1_sets', 'P2_sets',
+        # Context (4)
+        'point_server', 'set_number', 'game_number', 'point_number',
+        # COMMENTATO: match_progress - causava problemi con match points
+        # Tie-break (6)
+        'is_tiebreak', 'is_decisive_tiebreak',
+        'tb_p1_points', 'tb_p2_points',
+        'tb_p1_needs_to_win', 'tb_p2_needs_to_win',
+        # COMMENTATO: tb_points_diff, tb_p1_is_leading, tb_p1_one_point_away, tb_p2_one_point_away
+        # Match format (3)
+        'is_best_of_5', 'sets_to_win', 'is_final_set',
+        # Performance (6)
+        'P_srv_win_long', 'P_srv_lose_long',
+        'P_srv_win_short', 'P_srv_lose_short',
+        'p1_momentum', 'p2_momentum',
+        # COMMENTATO: Critical points (6) - is_p1_break_point, is_p2_break_point, etc.
+    ]
+    
+    # Converti tutte le colonne a float
+    for col in CLEAN_FEATURE_COLUMNS:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+    
+    # Costruisci matrice delle features
+    X_all = df[CLEAN_FEATURE_COLUMNS].values.astype(float)
+    
+    # Target
+    if 'p1_wins_match' not in df.columns:
+        raise ValueError("p1_wins_match column required - call add_match_labels first")
+    y_all = df['p1_wins_match'].values.astype(int)
+    
+    # Sample weights - usa importanza per dare più peso ai punti critici
+    if 'point_importance' in df.columns:
+        weights_all = df['point_importance'].values.astype(float)
+        # Cap più alto per dare più peso ai punti critici (match points, etc.)
+        weights_all = np.clip(weights_all, 1.0, 6.0)  # Cap a 6 per punti molto critici
+    else:
+        weights_all = np.ones(len(df), dtype=float)
+    
+    # Bonus per match competitivi (andati a 3+ set)
+    match_groups = df.groupby(MATCH_COL, sort=False).ngroup()
+    total_sets = (df['P1_sets'] + df['P2_sets']).groupby(match_groups).transform('max')
+    competitive_weight = np.where(total_sets >= 3.5, 1.5, 1.0)
+    weights_all = weights_all * competitive_weight
+    
+    # Maschera per rimuovere NaN
+    mask = ~np.isnan(X_all).any(axis=1) & ~np.isnan(y_all)
+    X = X_all[mask]
+    y = y_all[mask]
+    sample_weights = weights_all[mask]
+    
+    print(f"[build_clean_features_nn] Built {X.shape[0]} samples with {X.shape[1]} features")
+    print(f"[build_clean_features_nn] Features (25 total - ORIGINALI):")
+    print(f"  - Core scoring: 6")
+    print(f"  - Context: 4") 
+    print(f"  - Tie-break: 6")
+    print(f"  - Match format: 3")
+    print(f"  - Performance: 6")
+    print(f"  - Critical points: 6 (break/set/match point per giocatore)")
+    
+    return X, y, mask, sample_weights, CLEAN_FEATURE_COLUMNS

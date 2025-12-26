@@ -1,5 +1,8 @@
 import os
 import numpy as np
+import json
+import torch
+import torch.nn as nn
 
 from .data_loader import load_points_multiple, MATCH_COL, SERVER_COL, WINDOW
 from .config import load_config
@@ -7,17 +10,129 @@ from .features import (
     MATCH_FEATURE_COLUMNS,
     add_match_labels,
     add_rolling_serve_return_features,
+    add_break_hold_features,
     add_leverage_and_momentum,
     add_additional_features,
     build_dataset,
+    build_clean_features_nn,
 )
 from .model import load_model, predict_with_model
 from .plotting import plot_match_probabilities
+from .new_model_nn import MultiTaskTennisNN, build_new_features
+
+
+def _uses_clean_features(model):
+    """Check if model was trained with clean features."""
+    # Multi-task model always uses new features (23 features)
+    if hasattr(model, 'model_type') and model.model_type == 'multi_task_nn':
+        return 'multi_task'
+    # Neural network models have use_clean_features attribute
+    if hasattr(model, 'use_clean_features'):
+        return model.use_clean_features
+    # XGBoost models always use full features
+    return False
+
+
+def _build_features_for_model(df, model):
+    """
+    Build features using the same pipeline as model training.
+    
+    Args:
+        df: DataFrame with point data (must already have add_additional_features called)
+        model: Trained model
+    
+    Returns:
+        X, y, mask, sample_weights, feature_names (or more for multi-task)
+    """
+    feature_type = _uses_clean_features(model)
+    
+    if feature_type == 'multi_task':
+        # Multi-task model with distance features (23 features)
+        # Returns 6 values: X, y_match, y_set, y_game, weights, feature_names
+        # We only need X, y_match, and weights for prediction
+        X, y_match, y_set, y_game, weights, feature_names = build_new_features(df)
+        # Create mask (all valid since build_new_features already filters)
+        mask = np.ones(len(X), dtype=bool)
+        return X, y_match, mask, weights, feature_names
+    elif feature_type:
+        # Clean features (25 features)
+        return build_clean_features_nn(df)
+    else:
+        # Full feature set for XGBoost
+        df = add_break_hold_features(df)
+        X, y, mask, sample_weights, _ = build_dataset(df)
+        return X, y, mask, sample_weights, MATCH_FEATURE_COLUMNS
+
+
+def load_multitask_model(model_path):
+    """
+    Load multi-task neural network model from JSON.
+    """
+    with open(model_path, 'r') as f:
+        data = json.load(f)
+    
+    if data.get('model_type') != 'multi_task_nn':
+        raise ValueError(f"Model type is {data.get('model_type')}, not multi_task_nn")
+    
+    # Reconstruct model
+    input_dim = data['input_dim']
+    hidden_dims = data['hidden_dims']
+    dropout = data['dropout']
+    temperature = data['temperature']
+    
+    model = MultiTaskTennisNN(input_dim, hidden_dims, dropout)
+    
+    # Load weights
+    state_dict = {k: torch.FloatTensor(v) for k, v in data['state_dict'].items()}
+    model.load_state_dict(state_dict)
+    model.eval()
+    
+    # Attach scaler and metadata
+    model.scaler_center = np.array(data['scaler_center'])
+    model.scaler_scale = np.array(data['scaler_scale'])
+    model.feature_names = data['feature_names']
+    model.temperature = temperature
+    model.model_type = 'multi_task_nn'
+    
+    return model
+
+
+def predict_with_multitask_model(model, X):
+    """
+    Make predictions with multi-task model.
+    Returns only match probabilities (main output).
+    """
+    from sklearn.preprocessing import RobustScaler
+    
+    # Normalize
+    X_scaled = (X - model.scaler_center) / model.scaler_scale
+    
+    # Predict
+    with torch.no_grad():
+        X_tensor = torch.FloatTensor(X_scaled)
+        output_dict = model(X_tensor)
+        
+        # Apply temperature scaling
+        eps = 1e-7
+        pred = torch.clamp(output_dict['match'], eps, 1-eps)
+        p_temp = torch.pow(pred, 1.0/model.temperature)
+        one_minus_p_temp = torch.pow(1 - pred, 1.0/model.temperature)
+        pred_cal = p_temp / (p_temp + one_minus_p_temp + eps)
+        
+        result = pred_cal.numpy().squeeze()
+        # Ensure it's always at least 1D
+        if result.ndim == 0:
+            result = np.array([result])
+        return result
 
 
 def _predict_p1_proba(model, x_vec):
     """Return P1 win probability for classifier, regressor, or neural network models."""
-    return float(predict_with_model(model, x_vec.reshape(1, -1))[0])
+    # Check if multi-task model
+    if hasattr(model, 'model_type') and model.model_type == 'multi_task_nn':
+        return float(predict_with_multitask_model(model, x_vec.reshape(1, -1))[0])
+    else:
+        return float(predict_with_model(model, x_vec.reshape(1, -1))[0])
 
 
 def is_critical_point(row, sets_to_win=3):
@@ -739,9 +854,8 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
                                                  weight_serve_return=use_weighted)
     full_df = add_additional_features(full_df)
     full_df = add_leverage_and_momentum(full_df, alpha=alpha)
-    # NON aggiungiamo break features
     
-    X_full, _, mask_full, _, _ = build_dataset(full_df)
+    X_full, _, mask_full, _, _ = _build_features_for_model(full_df, model)
     print(f"[{mode}] Full dataset built: {len(X_full)} valid points")
     
     # Create mapping from df_valid index to X_full position
@@ -823,9 +937,8 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
                                                            weight_serve_return=True)
             current_df = add_additional_features(current_df)
             current_df = add_leverage_and_momentum(current_df, alpha=alpha)
-            # NON aggiungiamo break features
             
-            X_curr, _, mask_curr, _, _ = build_dataset(current_df)
+            X_curr, _, mask_curr, _, _ = _build_features_for_model(current_df, model)
             
             # Get the last valid point (which is our current point)
             if len(X_curr) > 0:
@@ -904,14 +1017,13 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
                                                   weight_serve_return=(mode == "semi-realistic"))
         cf_df = add_additional_features(cf_df)
         cf_df = add_leverage_and_momentum(cf_df, alpha=alpha)
-        # NON aggiungiamo break features
 
         # If match did NOT end after flipping, ensure MatchFinished stays 0 so the model
         # does not treat this point as terminal.
         if not match_ended and 'MatchFinished' in cf_df.columns:
             cf_df['MatchFinished'] = 0.0
         
-        X_cf, _, mask_cf, _, _ = build_dataset(cf_df)
+        X_cf, _, mask_cf, _, _ = _build_features_for_model(cf_df, model)
         
         # Map the flipped point to the correct position in X_cf (which is mask-compacted)
         target_pos = None
@@ -1034,6 +1146,20 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     # Keep a copy of raw data with labels for counterfactual simulation
     df_raw_with_labels = df.copy()
     
+    # Load model first to know which features to use (check if multi-task)
+    with open(model_path, 'r') as f:
+        model_data = json.load(f)
+    
+    if model_data.get('model_type') == 'multi_task_nn':
+        model = load_multitask_model(model_path)
+        print(f"[predict] Loaded MULTI-TASK model (23 distance features)")
+        is_multitask = True
+    else:
+        model = load_model(model_path)
+        is_multitask = False
+    
+    use_clean = _uses_clean_features(model)
+    
     # Build features based on point_by_point flag
     if point_by_point:
         print(f"[predict] Building features POINT BY POINT for match {match_id_str} (slower, more accurate)...")
@@ -1042,19 +1168,17 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
         df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
         df = add_additional_features(df)
         df = add_leverage_and_momentum(df, alpha=alpha)
-        X, y, mask, sample_weights, _ = build_dataset(df)
+        X, y, mask, sample_weights, _ = _build_features_for_model(df, model)
         df_valid = df[mask].copy()
     else:
         print(f"[predict] Building features using FULL MATCH INFO for match {match_id_str} (faster)...")
         df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
         df = add_additional_features(df)
         df = add_leverage_and_momentum(df, alpha=alpha)
-        X, y, mask, sample_weights, _ = build_dataset(df)
+        X, y, mask, sample_weights, _ = _build_features_for_model(df, model)
         df_valid = df[mask].copy()
     
     print(f"[predict] Dataset built: {len(df_valid)} valid points for match {match_id_str}")
-
-    model = load_model(model_path)
 
     # ALWAYS compute importance-based counterfactual (fast)
     print("\n=== COUNTERFACTUAL: Point Importance Scaling ===")

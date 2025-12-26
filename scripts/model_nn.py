@@ -15,15 +15,17 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler
 
 from .data_loader import load_points_multiple
 from .features import (
     add_match_labels,
     add_rolling_serve_return_features,
     add_additional_features,
+    add_break_hold_features,
     add_leverage_and_momentum,
     build_dataset,
+    build_clean_features_nn,  # Nuova funzione per features pulite
     MATCH_FEATURE_COLUMNS,
 )
 from .config import load_config
@@ -157,12 +159,14 @@ def prepare_nn_data(X, y, sample_weights, df=None, remove_duplicates=True, norma
             w_proc = w_proc[unique_indices]
             print(f"[prepare_nn_data] Rimossi {n_removed} duplicati ({100*n_removed/len(X):.1f}%)")
     
-    # 4. NORMALIZZAZIONE: StandardScaler per features con media 0 e varianza 1
+    # 4. NORMALIZZAZIONE: RobustScaler invece di StandardScaler
+    # RobustScaler usa mediana e IQR invece di mean/std
+    # Più robusto agli outlier e preserva meglio le relazioni tra features
     scaler = None
     if normalize:
-        scaler = StandardScaler()
+        scaler = RobustScaler()
         X_proc = scaler.fit_transform(X_proc)
-        print(f"[prepare_nn_data] Features normalizzate (mean=0, std=1)")
+        print(f"[prepare_nn_data] Features normalizzate con RobustScaler (mediana/IQR)")
     
     return X_proc, y_proc, w_proc, scaler
 
@@ -241,10 +245,11 @@ class TennisNN(nn.Module):
 
 
 def train_nn_model(file_paths, model_out, config_path=None, gender="male",
-                   hidden_dims=[256, 128, 64], dropout=0.4, 
-                   epochs=250, batch_size=256, learning_rate=0.0005,
+                   hidden_dims=[128, 64], dropout=0.4, 
+                   epochs=200, batch_size=1024, learning_rate=0.001,
                    weight_exponent=0.5, use_weighted_features=True,
-                   temperature=2.5, early_stopping_patience=25):
+                   temperature=4.0, early_stopping_patience=40,
+                   use_clean_features=True):  # NUOVO: usa features pulite per default
     """
     Train a neural network model for tennis match prediction.
     
@@ -262,6 +267,7 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
         use_weighted_features: If True, use weighted serve/return features
         temperature: Temperature scaling per calibrazione probabilità (default 1.0)
         early_stopping_patience: Stop se validation loss non migliora per N epochs (default 20)
+        use_clean_features: Se True, usa features pulite (25) invece di complete (45)
     
     Returns:
         Trained model, test accuracy, test ROC AUC
@@ -275,8 +281,10 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
         - Rete più profonda [256, 128, 64]
         - L2 regularization (weight_decay)
         - Break features opzionali
+        - Features pulite (NEW): set minimo di features essenziali per imparare tennis
     """
     print("[train_nn] Loading and processing data...")
+    print(f"[train_nn] Using {'CLEAN' if use_clean_features else 'FULL'} feature set")
     
     if not file_paths:
         raise ValueError("train_nn_model: no input files provided")
@@ -322,16 +330,26 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
     # Add labels
     df = add_match_labels(df)
     
-    # Build features with optional weighting
-    df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window,
-                                          weight_serve_return=use_weighted_features)
-    df = add_additional_features(df)
-    df = add_leverage_and_momentum(df, alpha=alpha)
+    # Build features
+    if use_clean_features:
+        # USA FEATURES PULITE: solo le essenziali per imparare tennis
+        print("[train_nn] Building CLEAN feature set (25 features)")
+        df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window,
+                                              weight_serve_return=use_weighted_features)
+        df = add_additional_features(df)  # Crea P1SetsWon, P2SetsWon, etc.
+        df = add_leverage_and_momentum(df, alpha=alpha)
+        X, y, mask, sample_weights, feature_names = build_clean_features_nn(df)
+    else:
+        # USA FEATURES COMPLETE: tutte le features originali
+        print("[train_nn] Building FULL feature set (45 features)")
+        df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window,
+                                              weight_serve_return=use_weighted_features)
+        df = add_additional_features(df)
+        df = add_break_hold_features(df)  # CRITICAL: distingue break vs hold
+        df = add_leverage_and_momentum(df, alpha=alpha)
+        X, y, mask, sample_weights, _ = build_dataset(df)
+        feature_names = MATCH_FEATURE_COLUMNS
     
-    # NON aggiungiamo break features - causano problemi di predizione
-    # df = add_break_features(df)
-    
-    X, y, mask, sample_weights, _ = build_dataset(df)
     print(f"[train_nn] dataset shape: {X.shape} positives (P1 wins): {int(np.sum(y))}")
     print(f"[train_nn] long_window={long_window}, short_window={short_window}, alpha={alpha:.2f}")
     
@@ -343,18 +361,18 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
     print(f"[train_nn] PRIMA pre-processing NN: weights mean={np.mean(sample_weights):.2f}, max={np.max(sample_weights):.2f}")
     
     # ===== PREPARAZIONE SPECIFICA PER RETE NEURALE =====
-    # RIMOSSA normalizzazione - causava problemi di segno e predizioni sbagliate
-    # La NN userà le stesse features grezze del BDT
-    # NON INFLUISCE SUL BDT!
+    # Normalizzazione con StandardScaler per stabilizzare training
+    # IMPORTANTE: preserve feature semantics usando RobustScaler invece di StandardScaler
+    # RobustScaler usa mediana e IQR invece di mean/std, più robusto agli outlier
     X, y, sample_weights, scaler = prepare_nn_data(
         X, y, sample_weights,
         remove_duplicates=True,    # Rimuove punti duplicati (3 decimali)
-        normalize=False,           # NORMALIZZAZIONE DISABILITATA - causava bias verso P2
+        normalize=True,            # NORMALIZZAZIONE ABILITATA - con RobustScaler
         weight_cap=6.0             # Cap sui weights
     )
     print(f"[train_nn] DOPO pre-processing NN: weights mean={np.mean(sample_weights):.2f}, max={np.max(sample_weights):.2f}")
     print(f"[train_nn] Dataset finale: {X.shape[0]} punti, {X.shape[1]} features")
-    print(f"[train_nn] Features NON normalizzate - usando valori grezzi come BDT")
+    print(f"[train_nn] Features normalizzate con RobustScaler (mediana/IQR)")
     
     # Train/test split (no stratify - we're working with point-level data, not match-level)
     X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
@@ -385,7 +403,7 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
     
     # Use BCEWithLogitsLoss con pos_weight per bilanciare le classi
     criterion = nn.BCELoss(reduction='none')  # We'll apply weights manually
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)  # Più L2 reg
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-3)  # FORTE L2 reg
     
     # Learning rate scheduler più aggressivo
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=8)
@@ -412,13 +430,17 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
             optimizer.zero_grad()
             outputs = model(batch_X)
             
-            # Label smoothing per ridurre overconfidence: 
-            # 0 → 0.05, 1 → 0.95
-            smoothed_y = batch_y * 0.9 + 0.05
+            # Label smoothing MODERATO per bilanciare: 
+            # 0 → 0.10, 1 → 0.90
+            smoothed_y = batch_y * 0.80 + 0.10
             
             loss = criterion(outputs, smoothed_y)
             weighted_loss = (loss * batch_w).mean()
             weighted_loss.backward()
+            
+            # Gradient clipping per stabilità
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             train_loss += weighted_loss.item()
@@ -500,13 +522,16 @@ def train_nn_model(file_paths, model_out, config_path=None, gender="male",
         'hidden_dims': hidden_dims,
         'dropout': dropout,
         'temperature': temperature,
-        'feature_names': MATCH_FEATURE_COLUMNS,
+        'feature_names': feature_names,  # usa i nomi corretti
+        'use_clean_features': use_clean_features,  # salva quale tipo di features
         'test_accuracy': float(test_acc),
         'test_auc': float(test_auc),
         'use_weighted_features': use_weighted_features,
         # Salva parametri dello scaler per normalizzazione in predizione
-        'scaler_mean': scaler.mean_.tolist() if scaler is not None else None,
+        # RobustScaler usa center_ e scale_ invece di mean_ e scale_
+        'scaler_center': scaler.center_.tolist() if scaler is not None else None,
         'scaler_scale': scaler.scale_.tolist() if scaler is not None else None,
+        'scaler_type': 'RobustScaler' if scaler is not None else None,
     }
     
     # Create directory if it doesn't exist
@@ -546,16 +571,22 @@ def load_nn_model(model_path):
     model.load_state_dict(state_dict)
     model.eval()
     
-    # Load scaler parameters if available
-    scaler_params = None
-    if 'scaler_mean' in model_data and model_data['scaler_mean'] is not None:
-        scaler_params = {
-            'mean': np.array(model_data['scaler_mean']),
-            'scale': np.array(model_data['scaler_scale'])
-        }
+    # Load scaler parameters and reconstruct scaler object
+    model.scaler = None
+    if 'scaler_center' in model_data and model_data['scaler_center'] is not None:
+        scaler = RobustScaler()
+        scaler.center_ = np.array(model_data['scaler_center'])
+        scaler.scale_ = np.array(model_data['scaler_scale'])
+        model.scaler = scaler
+    elif 'scaler_mean' in model_data and model_data['scaler_mean'] is not None:
+        # Backward compatibility con vecchi modelli StandardScaler
+        scaler = StandardScaler()
+        scaler.mean_ = np.array(model_data['scaler_mean'])
+        scaler.scale_ = np.array(model_data['scaler_scale'])
+        model.scaler = scaler
     
-    # Store scaler in model for easy access
-    model.scaler_params = scaler_params
+    # Store whether model uses clean features (for prediction pipeline)
+    model.use_clean_features = model_data.get('use_clean_features', False)
     
     return model
 
@@ -563,10 +594,10 @@ def load_nn_model(model_path):
 def predict_nn(model, X):
     """
     Make predictions with neural network model.
-    NON applica normalizzazione - il modello usa features grezze come BDT.
+    Applica normalizzazione se il modello è stato allenato con scaler.
     
     Args:
-        model: Trained TennisNN model
+        model: Trained TennisNN model (con attributo scaler opzionale)
         X: Feature matrix (numpy array or single row) - valori grezzi
     
     Returns:
@@ -578,8 +609,18 @@ def predict_nn(model, X):
     if len(X.shape) == 1:
         X = X.reshape(1, -1)
     
-    # NON applicare normalizzazione - il modello è allenato su dati grezzi
-    # (la normalizzazione causava problemi di predizione)
+    # Check feature dimension mismatch
+    if hasattr(model, 'input_dim') and X.shape[1] != model.input_dim:
+        raise ValueError(
+            f"Feature dimension mismatch: model expects {model.input_dim} features, "
+            f"but input has {X.shape[1]} features. "
+            f"This usually means the model was trained with different features. "
+            f"Please retrain the model with: python tennisctl.py train-nn --files data/*.csv --model-out models/nn_model.json"
+        )
+    
+    # Applica normalizzazione se presente
+    if hasattr(model, 'scaler') and model.scaler is not None:
+        X = model.scaler.transform(X)
     
     with torch.no_grad():
         X_tensor = torch.FloatTensor(X)
