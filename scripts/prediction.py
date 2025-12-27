@@ -1146,6 +1146,17 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     # Keep a copy of raw data with labels for counterfactual simulation
     df_raw_with_labels = df.copy()
     
+    # CRITICAL: Set is_best_of_5 BEFORE any feature computation
+    # For Wimbledon and other Grand Slams, men's matches are best-of-5
+    # This must be set early and propagated through all feature computations
+    # to ensure tie-break thresholds and match format are correct
+    if 'is_best_of_5' not in df.columns:
+        # For Grand Slam men's matches: always best-of-5
+        # For women or other tournaments: would need metadata
+        # Default to best-of-5 for safety (Wimbledon assumption)
+        df['is_best_of_5'] = 1.0
+        print(f"[predict] Set is_best_of_5=1.0 (best-of-5 format assumed for Grand Slam)")
+    
     # Load model first to know which features to use (check if multi-task)
     with open(model_path, 'r') as f:
         model_data = json.load(f)

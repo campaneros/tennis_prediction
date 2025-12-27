@@ -283,24 +283,24 @@ def build_new_features(df):
     df['set_number'] = pd.to_numeric(df.get('SetNo', 1), errors='coerce').fillna(1).astype(float)
     
     # is_best_of_5: MUST be constant for entire match
-    # For prediction: should already be set by add_additional_features
-    # For safety, enforce it here if missing
+    # Should be set by caller before calling this function
     if 'is_best_of_5' not in df.columns or df['is_best_of_5'].isna().any():
-        # Default: assume best-of-5 for Grand Slams (Wimbledon, etc.)
-        # This is SAFE because if match actually goes to 4+ sets, we'll know it's bo5
-        # If it ends in 2-3 sets, both bo3 and bo5 would be valid
-        print("[build_new_features] WARNING: is_best_of_5 not found, defaulting to best-of-5 (Grand Slam)")
+        # Default to best-of-5 for Grand Slams (Wimbledon, etc.)
         df['is_best_of_5'] = 1.0
     else:
         # Make sure it's constant per match (use the value from any point in that match)
         df['is_best_of_5'] = df.groupby(MATCH_COL)['is_best_of_5'].transform('first').astype(float)
     
     # 3. Tie-break (with 12-12 rule for final set)
-    sets_tied = (df['P1_sets'] == df['P2_sets'])
-    sets_played = df['P1_sets'] + df['P2_sets']
-    is_final_set = (df['set_number'] >= 3) & sets_tied & (sets_played >= 2)
+    # Final set = set 5 in best-of-5, or set 3 in best-of-3
+    # Only in these sets we use 12-12 tie-break rule instead of 6-6
+    is_final_set_possible = (
+        ((df['is_best_of_5'] == 1.0) & (df['set_number'] >= 5)) |  # Set 5 in best-of-5
+        ((df['is_best_of_5'] == 0.0) & (df['set_number'] >= 3))    # Set 3 in best-of-3
+    )
     
-    tb_threshold = np.where(is_final_set, 12, 6)
+    # Tie-break threshold: 12 for final set, 6 for others
+    tb_threshold = np.where(is_final_set_possible, 12, 6)
     is_games_at_threshold = (df['P1_games'] == df['P2_games']) & (df['P1_games'] >= tb_threshold)
     
     if 'P1Score' in df.columns:
