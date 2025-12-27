@@ -163,6 +163,24 @@ def calculate_distance_features(df):
     tb_p1 = pd.to_numeric(df.get('tb_p1_points', 0), errors='coerce').fillna(0)
     tb_p2 = pd.to_numeric(df.get('tb_p2_points', 0), errors='coerce').fillna(0)
     
+    # Determine sets needed to win match from match FORMAT (not from sets played!)
+    # Use is_best_of_5 feature or infer from tournament structure
+    if 'is_best_of_5' in df.columns:
+        is_bo5 = df['is_best_of_5'].astype(bool)
+    else:
+        # Fallback: infer from gender or tournament (males usually best-of-5 in Grand Slams)
+        # For safety, check if match went to 4+ sets
+        match_went_to_4_sets = df.groupby(MATCH_COL)['set_number'].transform('max') >= 4
+        is_bo5 = match_went_to_4_sets
+    
+    sets_needed = np.where(is_bo5, 3, 2)  # Best-of-5 needs 3 sets, best-of-3 needs 2
+    
+    # One set away means: current sets == sets_needed - 1
+    # For best-of-5: need to be at 2 sets (2-0, 2-1, or 2-2 situation where you're at 2)
+    # For best-of-3: need to be at 1 set (1-0 or 1-1 situation where you're at 1)
+    p1_one_set_away_direct = (p1_sets == sets_needed - 1)
+    p2_one_set_away_direct = (p2_sets == sets_needed - 1)
+    
     # Game point: winning this point wins the current game
     p1_game_point = np.zeros(len(df), dtype=float)
     p2_game_point = np.zeros(len(df), dtype=float)
@@ -173,7 +191,7 @@ def calculate_distance_features(df):
     p2_game_point = np.where(~is_tiebreak & (p2_pts == 4) & (p2_pts > p1_pts), 1.0, p2_game_point)
     p2_game_point = np.where(~is_tiebreak & (p2_pts == 3) & (p1_pts < 3), 1.0, p2_game_point)
     
-    # In tiebreaks: need 7+ points with 2-point lead
+    # In tiebreaks: need 7+ points with 2-point lead (or 1-point lead if already at 6+)
     p1_game_point = np.where(is_tiebreak & (tb_p1 >= 6) & (tb_p1 >= tb_p2 + 1), 1.0, p1_game_point)
     p2_game_point = np.where(is_tiebreak & (tb_p2 >= 6) & (tb_p2 >= tb_p1 + 1), 1.0, p2_game_point)
     
@@ -181,25 +199,47 @@ def calculate_distance_features(df):
     df['is_game_point_p2'] = p2_game_point
     
     # Set point: winning this point wins the current set
-    # This is true when: (1) on game point AND (2) winning this game wins the set
-    p1_one_game_from_set = (df['p1_games_to_win_set'] <= 1/13.0 + 0.01) & (df['p1_games_to_win_set'] > 0)
-    p2_one_game_from_set = (df['p2_games_to_win_set'] <= 1/13.0 + 0.01) & (df['p2_games_to_win_set'] > 0)
+    # This is TRUE only if: on game point AND winning THIS game wins the set
+    # 
+    # Rules for winning set by winning this game:
+    # 1. If at 5-X (X<=3): winning goes to 6-X, wins set
+    # 2. If at 5-4: winning goes to 6-4, wins set
+    # 3. If at 6-5: winning goes to 7-5, wins set  
+    # 4. If at 5-5: winning goes to 6-5, does NOT win set (need one more)
+    # 5. If in tiebreak: winning tiebreak wins the set
+    # 6. For final set with 12-12 rule: need to consider extended games (6-6, 7-7, ..., 12-12)
     
-    df['is_set_point_p1'] = (p1_game_point & p1_one_game_from_set).astype(float)
-    df['is_set_point_p2'] = (p2_game_point & p2_one_game_from_set).astype(float)
+    # Simplified logic: can win set this game if:
+    # - (my_games == 5 AND opp_games <= 4) OR
+    # - (my_games >= 6 AND my_games == opp_games + 1) OR  (6-5, 7-6, 8-7, etc.)
+    # - in_tiebreak
+    
+    p1_can_win_set_this_game_direct = (
+        ((p1_games == 5) & (p2_games <= 4)) |  # 5-0, 5-1, 5-2, 5-3, 5-4
+        ((p1_games >= 6) & (p1_games == p2_games + 1)) |  # 6-5, 7-6, 8-7, etc.
+        is_tiebreak  # Tiebreak always determines set
+    )
+    p2_can_win_set_this_game_direct = (
+        ((p2_games == 5) & (p1_games <= 4)) |
+        ((p2_games >= 6) & (p2_games == p1_games + 1)) |
+        is_tiebreak
+    )
+    
+    df['is_set_point_p1'] = (p1_game_point * p1_can_win_set_this_game_direct.astype(float))
+    df['is_set_point_p2'] = (p2_game_point * p2_can_win_set_this_game_direct.astype(float))
     
     # Match point: winning this point wins the match
     # This is true when: (1) on set point AND (2) one set away from match
-    df['is_match_point_p1'] = (df['is_set_point_p1'] & p1_one_set_away).astype(float)
-    df['is_match_point_p2'] = (df['is_set_point_p2'] & p2_one_set_away).astype(float)
+    df['is_match_point_p1'] = (df['is_set_point_p1'].values * p1_one_set_away_direct.astype(float))
+    df['is_match_point_p2'] = (df['is_set_point_p2'].values * p2_one_set_away_direct.astype(float))
     
     # Break point: winning this point breaks opponent's serve
     # Only matters when opponent is serving
-    is_p2_serving = (df.get('point_server', 2) == 2)
-    is_p1_serving = (df.get('point_server', 1) == 1)
+    is_p2_serving = (df.get('point_server', 2) == 2).values
+    is_p1_serving = (df.get('point_server', 1) == 1).values
     
-    df['is_break_point_p1'] = (p1_game_point & is_p2_serving).astype(float)
-    df['is_break_point_p2'] = (p2_game_point & is_p1_serving).astype(float)
+    df['is_break_point_p1'] = (p1_game_point * is_p2_serving.astype(float))
+    df['is_break_point_p2'] = (p2_game_point * is_p1_serving.astype(float))
     
     return df
 
@@ -242,11 +282,18 @@ def build_new_features(df):
     df['point_server'] = pd.to_numeric(df.get(SERVER_COL, 1), errors='coerce').fillna(1).astype(float)
     df['set_number'] = pd.to_numeric(df.get('SetNo', 1), errors='coerce').fillna(1).astype(float)
     
-    if 'SetNo_original' in df.columns:
-        max_set = df.groupby(MATCH_COL)['SetNo_original'].transform('max')
+    # is_best_of_5: MUST be constant for entire match
+    # For prediction: should already be set by add_additional_features
+    # For safety, enforce it here if missing
+    if 'is_best_of_5' not in df.columns or df['is_best_of_5'].isna().any():
+        # Default: assume best-of-5 for Grand Slams (Wimbledon, etc.)
+        # This is SAFE because if match actually goes to 4+ sets, we'll know it's bo5
+        # If it ends in 2-3 sets, both bo3 and bo5 would be valid
+        print("[build_new_features] WARNING: is_best_of_5 not found, defaulting to best-of-5 (Grand Slam)")
+        df['is_best_of_5'] = 1.0
     else:
-        max_set = df.groupby(MATCH_COL)['set_number'].transform('max')
-    df['is_best_of_5'] = (max_set >= 4).astype(float)
+        # Make sure it's constant per match (use the value from any point in that match)
+        df['is_best_of_5'] = df.groupby(MATCH_COL)['is_best_of_5'].transform('first').astype(float)
     
     # 3. Tie-break (with 12-12 rule for final set)
     sets_tied = (df['P1_sets'] == df['P2_sets'])
@@ -367,21 +414,21 @@ def build_new_features(df):
     critical_weight = np.ones(len(df))
     critical_weight = np.where(
         (df['is_match_point_p1'] > 0) | (df['is_match_point_p2'] > 0), 
-        5.0,  # Match points get 5x weight
+        25.0,  # Match points get 25x weight
         critical_weight
     )
     critical_weight = np.where(
         ((df['is_set_point_p1'] > 0) | (df['is_set_point_p2'] > 0)) & (critical_weight == 1.0),
-        3.0,  # Set points get 3x weight (if not already match point)
+        8.0,  # Set points get 8x weight (if not already match point)
         critical_weight
     )
     critical_weight = np.where(
         ((df['is_break_point_p1'] > 0) | (df['is_break_point_p2'] > 0)) & (critical_weight == 1.0),
-        2.0,  # Break points get 2x weight
+        3.0,  # Break points get 3x weight
         critical_weight
     )
     
-    weights = np.clip(leverage * critical_weight, 0.5, 10.0)
+    weights = np.clip(leverage * critical_weight, 0.5, 30.0)
     
     # Mask for valid samples
     mask = ~np.isnan(X_all).any(axis=1) & ~np.isnan(y_match)
@@ -392,11 +439,16 @@ def build_new_features(df):
     y_game_clean = y_game[mask]
     weights_clean = weights[mask] if hasattr(weights, '__len__') else np.ones(X.shape[0])
     
-    print(f"[build_new_features] Built {X.shape[0]} samples with {X.shape[1]} features")
-    print(f"  Features: 6 core + 3 context + 4 tiebreak + 8 distance + 8 critical + 2 performance = 31 total")
-    print(f"  Critical point samples: {int((df['is_match_point_p1'] + df['is_match_point_p2']).sum())} match points")
-    print(f"                          {int((df['is_set_point_p1'] + df['is_set_point_p2']).sum())} set points")
-    print(f"                          {int((df['is_break_point_p1'] + df['is_break_point_p2']).sum())} break points")
+    # Only print statistics once for full dataset (not during incremental builds)
+    # Check if this is likely an incremental build (small dataset with many missing features)
+    is_incremental_build = len(df) < 50 or df[MATCH_COL].nunique() < len(df) / 50
+    
+    if not is_incremental_build:
+        print(f"[build_new_features] Built {X.shape[0]} samples with {X.shape[1]} features")
+        print(f"  Features: 6 core + 3 context + 4 tiebreak + 8 distance + 8 critical + 2 performance = 31 total")
+        print(f"  Critical point samples: {int((df['is_match_point_p1'] + df['is_match_point_p2']).sum())} match points")
+        print(f"                          {int((df['is_set_point_p1'] + df['is_set_point_p2']).sum())} set points")
+        print(f"                          {int((df['is_break_point_p1'] + df['is_break_point_p2']).sum())} break points")
     
     return X, y_match_clean, y_set_clean, y_game_clean, weights_clean, FEATURE_COLUMNS
 
@@ -444,12 +496,14 @@ class MultiTaskTennisNN(nn.Module):
         }
 
 
-def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0):
+def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0, 
+                is_match_point_p1=None, is_match_point_p2=None):
     """
-    Custom loss with three components:
+    Custom loss with four components:
     1. Multi-task BCE for match, set, game
     2. Consistency penalty (set outcome should influence match outcome)
     3. Temperature scaling for calibration
+    4. Match point penalty (force high prob when player has match point)
     """
     
     # Apply temperature scaling with numerical stability
@@ -482,16 +536,37 @@ def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0):
     
     total_loss = total_loss + 0.1 * consistency_loss
     
+    # Match point penalty: enforce tennis rules
+    # If P1 has match point, P1 probability should be > 0.85
+    # If P2 has match point, P1 probability should be < 0.15
+    match_point_penalty = torch.tensor(0.0, device=pred_match_cal.device)
+    
+    if is_match_point_p1 is not None and is_match_point_p2 is not None:
+        # P1 match points: penalize if pred < 0.85
+        p1_mp_mask = is_match_point_p1 > 0.5
+        if p1_mp_mask.any():
+            p1_mp_penalty = torch.relu(0.85 - pred_match_cal[p1_mp_mask]).mean()
+            match_point_penalty = match_point_penalty + p1_mp_penalty
+        
+        # P2 match points: penalize if pred > 0.15
+        p2_mp_mask = is_match_point_p2 > 0.5
+        if p2_mp_mask.any():
+            p2_mp_penalty = torch.relu(pred_match_cal[p2_mp_mask] - 0.15).mean()
+            match_point_penalty = match_point_penalty + p2_mp_penalty
+    
+    total_loss = total_loss + 0.5 * match_point_penalty
+    
     return total_loss, {
         'match': loss_match.mean().item(),
         'set': loss_set.mean().item(),
         'game': loss_game.mean().item(),
         'consistency': consistency_loss.item(),
+        'match_point_penalty': match_point_penalty.item(),
     }
 
 
 def train_new_model(file_paths, model_out, gender="male", 
-                    hidden_dims=[128, 64], dropout=0.4, temperature=5.0,
+                    hidden_dims=[128, 64], dropout=0.4, temperature=8.0,
                     epochs=200, batch_size=1024, learning_rate=0.001,
                     early_stopping_patience=40):
     """
@@ -599,12 +674,17 @@ def train_new_model(file_paths, model_out, gender="male",
             batch_y_game = batch_y_game.to(device)
             batch_w = batch_w.to(device)
             
+            # Extract match point features (indices 23, 24 in FEATURE_COLUMNS)
+            # is_match_point_p1 is at index 23, is_match_point_p2 at index 24
+            is_mp_p1 = batch_X[:, 23]
+            is_mp_p2 = batch_X[:, 24]
+            
             optimizer.zero_grad()
             pred_dict = model(batch_X)
             
             loss, loss_components = custom_loss(
                 pred_dict, batch_y_match, batch_y_set, batch_y_game,
-                batch_w, temperature
+                batch_w, temperature, is_mp_p1, is_mp_p2
             )
             
             loss.backward()
@@ -623,10 +703,14 @@ def train_new_model(file_paths, model_out, gender="male",
             y_game_val_t = torch.FloatTensor(y_game_val).to(device)
             weights_val_t = torch.FloatTensor(weights_val).to(device)
             
+            # Extract match point features for validation
+            is_mp_p1_val = X_val_t[:, 23]
+            is_mp_p2_val = X_val_t[:, 24]
+            
             pred_val = model(X_val_t)
             val_loss, val_components = custom_loss(
                 pred_val, y_match_val_t, y_set_val_t, y_game_val_t,
-                weights_val_t, temperature
+                weights_val_t, temperature, is_mp_p1_val, is_mp_p2_val
             )
             val_loss = val_loss.item()
             

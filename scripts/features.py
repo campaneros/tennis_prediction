@@ -1807,12 +1807,30 @@ def build_clean_features_nn(df: pd.DataFrame):
     
     # 4. MATCH FORMAT
     # Determina formato dal numero massimo di set nel match
-    if 'SetNo_original' in df.columns:
-        max_set_per_match = df.groupby(MATCH_COL)['SetNo_original'].transform('max')
-    else:
-        max_set_per_match = df.groupby(MATCH_COL)['set_number'].transform('max')
+    # Determine match format: best-of-5 or best-of-3
+    # CRITICAL: This must be determined from match METADATA, not from sets played so far!
+    # 
+    # For training: we have complete match, so we can look at final set count
+    # For prediction: we need to infer from tournament/gender or use explicit flag
     
-    df['is_best_of_5'] = (max_set_per_match >= 4).astype(float)
+    # Check if we already have is_best_of_5 as a column (set by user or tournament metadata)
+    if 'is_best_of_5' not in df.columns:
+        # Infer from data: if ANY match has 4+ sets, it's best-of-5
+        # Group by match and get the maximum set number seen IN THIS DATAFRAME
+        if 'SetNo_original' in df.columns:
+            max_set_per_match = df.groupby(MATCH_COL)['SetNo_original'].transform('max')
+        else:
+            max_set_per_match = df.groupby(MATCH_COL)['set_number'].transform('max')
+        
+        # Propagate the format to ALL points in that match
+        # If max_set >= 4 anywhere in the match, it's best-of-5
+        match_format = df.groupby(MATCH_COL).apply(
+            lambda g: (g['SetNo_original'].max() if 'SetNo_original' in g else g['set_number'].max()) >= 4
+        )
+        df['is_best_of_5'] = df[MATCH_COL].map(match_format).fillna(1.0).astype(float)
+    else:
+        df['is_best_of_5'] = pd.to_numeric(df['is_best_of_5'], errors='coerce').fillna(1.0).astype(float)
+    
     df['sets_to_win'] = np.where(df['is_best_of_5'] == 1.0, 3.0, 2.0)
     
     # Set finale: siamo nel set che potrebbe decidere il match
