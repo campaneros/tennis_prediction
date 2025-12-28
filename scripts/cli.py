@@ -8,6 +8,8 @@ from .model_point import train_point_model
 from .prediction import run_prediction
 from .hyperopt import run_hyperopt
 from .plotting import plot_match_probabilities
+from .pretrain_tennis_rules import pretrain_tennis_rules
+from .transfer_learning import fine_tune_on_real_data
 import pandas as pd
 import os
 
@@ -38,6 +40,47 @@ def main():
                          help="Use clean feature set (25 features) for neural network instead of full set (45). Recommended for better learning of tennis rules.")
     train_p.add_argument("--new-model", action="store_true",
                          help="Use new multi-task model with distance features (23 features). Predicts match, set, and game outcomes simultaneously to learn tennis hierarchy.")
+
+    # TENNIS-TRAINING (pre-training on synthetic matches)
+    tennis_train_p = subparsers.add_parser("tennis-training", 
+                                            help="Pre-train model on synthetic tennis matches to learn scoring rules")
+    tennis_train_p.add_argument("--n-matches", type=int, default=50000,
+                                help="Number of synthetic matches to generate (default: 50000)")
+    tennis_train_p.add_argument("--epochs", type=int, default=50,
+                                help="Number of training epochs (default: 50)")
+    tennis_train_p.add_argument("--batch-size", type=int, default=2048,
+                                help="Batch size (default: 2048)")
+    tennis_train_p.add_argument("--temperature", type=float, default=3.0,
+                                help="Temperature for calibration (default: 3.0, use 3.0-5.0 for synthetic data)")
+    tennis_train_p.add_argument("--model-out", required=True,
+                                help="Path to save pre-trained model (e.g., models/tennis_rules_pretrained.pth)")
+    tennis_train_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+                                help="Device to use for training (default: cuda)")
+
+    # COMPLETE-MODEL (fine-tuning on real data)
+    complete_p = subparsers.add_parser("complete-model",
+                                       help="Fine-tune pre-trained model on real tennis data")
+    complete_p.add_argument("--files", nargs="+", required=True,
+                            help="List of CSV point-by-point files (real data)")
+    complete_p.add_argument("--pretrained", required=True,
+                            help="Path to pre-trained model checkpoint")
+    complete_p.add_argument("--model-out", required=True,
+                            help="Path to save fine-tuned model")
+    complete_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
+                            help="Filter dataset by gender (default: male)")
+    complete_p.add_argument("--epochs", type=int, default=30,
+                            help="Number of fine-tuning epochs (default: 30)")
+    complete_p.add_argument("--batch-size", type=int, default=1024,
+                            help="Batch size (default: 1024)")
+    complete_p.add_argument("--learning-rate", type=float, default=0.0001,
+                            help="Learning rate for fine-tuning (default: 0.0001)")
+    complete_p.add_argument("--temperature", type=float, default=12.0,
+                            help="Temperature for calibration (default: 12.0)")
+    complete_p.add_argument("--freeze-layers", action="store_true",
+                            help="Freeze first layer during fine-tuning (only train task heads)")
+    complete_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+                            help="Device to use for training (default: cuda)")
+
 
     # TRAIN-POINT (new)
     train_point_p = subparsers.add_parser("train-point", help="Train point-level model (predicts point winner)")
@@ -142,6 +185,46 @@ def main():
         else:
             plot_match_probabilities(df, str(match_id), args.plot_dir)
         print(f"[replot] Regenerated plot from {args.csv}")
+
+    elif args.command == "tennis-training":
+        # Pre-train on synthetic tennis matches
+        print("\n" + "="*80)
+        print("STARTING PHASE 1: PRE-TRAINING ON SYNTHETIC MATCHES")
+        print("="*80 + "\n")
+        
+        pretrain_tennis_rules(
+            n_matches=args.n_matches,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            temperature=args.temperature,
+            output_path=args.model_out,
+            device=args.device
+        )
+        
+        print("\n✓ Phase 1 complete! Pre-trained model saved.")
+        print(f"  Next step: Run 'complete-model' with --pretrained {args.model_out}\n")
+    
+    elif args.command == "complete-model":
+        # Fine-tune on real data
+        print("\n" + "="*80)
+        print("STARTING PHASE 2: FINE-TUNING ON REAL MATCHES")
+        print("="*80 + "\n")
+        
+        fine_tune_on_real_data(
+            files=args.files,
+            pretrained_path=args.pretrained,
+            output_path=args.model_out,
+            gender=args.gender,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            temperature=args.temperature,
+            freeze_layers=args.freeze_layers,
+            device=args.device
+        )
+        
+        print("\n✓ Phase 2 complete! Fine-tuned model ready for predictions.")
+        print(f"  Use: python tennisctl.py predict --model {args.model_out} ...\n")
 
     elif args.command == "hyperopt":
         run_hyperopt(args.files, args.n_iter, args.plot_dir, args.model_out, config_path=args.config, search_type=args.search_type)

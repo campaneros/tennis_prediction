@@ -66,35 +66,73 @@ def _build_features_for_model(df, model):
 
 def load_multitask_model(model_path):
     """
-    Load multi-task neural network model from JSON.
+    Load multi-task neural network model from JSON or PyTorch checkpoint.
+    Supports both old JSON format and new transfer learning .pth format.
     """
-    with open(model_path, 'r') as f:
-        data = json.load(f)
+    # Check if it's a PyTorch checkpoint (.pth) or JSON
+    if model_path.endswith('.pth'):
+        # Load transfer learning model
+        from .pretrain_tennis_rules import TennisRulesNet
+        
+        checkpoint = torch.load(model_path, map_location='cpu')
+        
+        # Create model
+        input_dim = checkpoint['input_size']
+        hidden_dims = checkpoint['hidden_sizes']
+        dropout = checkpoint['dropout']
+        temperature = checkpoint['temperature']
+        
+        model = TennisRulesNet(input_dim, hidden_dims, dropout)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+        
+        # Attach metadata (no scaler for transfer learning - features already normalized)
+        model.feature_names = None
+        model.temperature = temperature
+        model.model_type = 'multi_task_nn'
+        model.is_transfer_learning = True
+        
+        # No scaler needed - features are already normalized in build_new_features
+        model.scaler_center = np.zeros(input_dim)
+        model.scaler_scale = np.ones(input_dim)
+        
+        print(f"[load_model] Loaded transfer learning model from {model_path}")
+        if 'pretrained_from' in checkpoint:
+            print(f"  Pre-trained on {checkpoint['pretrain_matches']} synthetic matches")
+            print(f"  Fine-tuned on {checkpoint['finetune_matches']} real matches")
+        
+        return model
     
-    if data.get('model_type') != 'multi_task_nn':
-        raise ValueError(f"Model type is {data.get('model_type')}, not multi_task_nn")
-    
-    # Reconstruct model
-    input_dim = data['input_dim']
-    hidden_dims = data['hidden_dims']
-    dropout = data['dropout']
-    temperature = data['temperature']
-    
-    model = MultiTaskTennisNN(input_dim, hidden_dims, dropout)
-    
-    # Load weights
-    state_dict = {k: torch.FloatTensor(v) for k, v in data['state_dict'].items()}
-    model.load_state_dict(state_dict)
-    model.eval()
-    
-    # Attach scaler and metadata
-    model.scaler_center = np.array(data['scaler_center'])
-    model.scaler_scale = np.array(data['scaler_scale'])
-    model.feature_names = data['feature_names']
-    model.temperature = temperature
-    model.model_type = 'multi_task_nn'
-    
-    return model
+    else:
+        # Load old JSON format
+        with open(model_path, 'r') as f:
+            data = json.load(f)
+        
+        if data.get('model_type') != 'multi_task_nn':
+            raise ValueError(f"Model type is {data.get('model_type')}, not multi_task_nn")
+        
+        # Reconstruct model
+        input_dim = data['input_dim']
+        hidden_dims = data['hidden_dims']
+        dropout = data['dropout']
+        temperature = data['temperature']
+        
+        model = MultiTaskTennisNN(input_dim, hidden_dims, dropout)
+        
+        # Load weights
+        state_dict = {k: torch.FloatTensor(v) for k, v in data['state_dict'].items()}
+        model.load_state_dict(state_dict)
+        model.eval()
+        
+        # Attach scaler and metadata
+        model.scaler_center = np.array(data['scaler_center'])
+        model.scaler_scale = np.array(data['scaler_scale'])
+        model.feature_names = data['feature_names']
+        model.temperature = temperature
+        model.model_type = 'multi_task_nn'
+        model.is_transfer_learning = False
+        
+        return model
 
 
 def predict_with_multitask_model(model, X):
