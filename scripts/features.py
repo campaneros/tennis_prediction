@@ -913,31 +913,7 @@ def add_additional_features(df: pd.DataFrame) -> pd.DataFrame:
                     df.loc[tied_mask, short_col] * (1 - dampen_factor)
                 )
     
-    # DECISIVE TIEBREAK DAMPENING: nel tiebreak del 5° set (2-2), la storia del match
-    # è quasi irrilevante - conta solo lo score del tiebreak
-    if 'is_decisive_tiebreak' in df.columns:
-        decisive_tb_mask = df['is_decisive_tiebreak'] == 1.0
-        if decisive_tb_mask.any():
-            # Nel tiebreak decisivo, dampa FORTEMENTE tutte le feature cumulative
-            # Solo lo score del tiebreak e le statistiche recenti contano
-            tb_dampen = 0.01  # 99% riduzione delle feature storiche
-            
-            # Dampa momentum quasi a zero
-            if 'momentum' in df.columns:
-                df.loc[decisive_tb_mask, 'momentum'] = df.loc[decisive_tb_mask, 'momentum'] * tb_dampen
-            
-            # Dampa break/hold differentials (la storia del match non conta più)
-            for col in ['BreaksDiff', 'Game_Diff', 'CurrentSetGamesDiff', 'weighted_game_diff']:
-                if col in df.columns:
-                    df.loc[decisive_tb_mask, col] = df.loc[decisive_tb_mask, col] * tb_dampen
-            
-            # Serve stats: usa solo short window
-            if 'P_srv_win_short' in df.columns and 'P_srv_win_long' in df.columns:
-                df.loc[decisive_tb_mask, 'P_srv_win_long'] = df.loc[decisive_tb_mask, 'P_srv_win_short']
-            if 'P_srv_lose_short' in df.columns and 'P_srv_lose_long' in df.columns:
-                df.loc[decisive_tb_mask, 'P_srv_lose_long'] = df.loc[decisive_tb_mask, 'P_srv_lose_short']
-            
-            print(f"[add_additional_features] Dampened {decisive_tb_mask.sum()} decisive tiebreak points")
+    # DECISIVE TIEBREAK DAMPENING: removed - handled by neural network features
 
     # Early match indicator: primi 2-3 game quando le statistiche cumulative non sono affidabili
     # In questa fase, Game_Diff e break counts sono più informativi del momentum/storia
@@ -1717,18 +1693,15 @@ def build_clean_features_nn(df: pd.DataFrame):
     # - Set 1-4: tie-break al 6-6
     # - Set 5 (decisivo): tie-break al 12-12
     
-    # Determina se siamo nel set decisivo (5° in best-of-5, 3° in best-of-3)
-    sets_tied = (df['P1_sets'] == df['P2_sets'])
-    sets_played = df['P1_sets'] + df['P2_sets']
-    
-    # Best-of-5: set decisivo è quando set_number >= 3 e set pari
-    # Best-of-3: set decisivo è quando set_number >= 2 e set pari
-    is_best_of_5_decisive = (df['set_number'] >= 3) & sets_tied & (sets_played >= 2)
-    is_best_of_3_decisive = (df['set_number'] >= 2) & sets_tied & (sets_played >= 1)
-    is_final_set_potential = is_best_of_5_decisive | is_best_of_3_decisive
+    # Determina se siamo nel SET FINALE (non solo "potenzialmente finale")
+    # Set finale = set 5 in best-of-5, set 3 in best-of-3
+    # SOLO in questo set si usa la regola 12-12
+    is_final_set_bo5 = (df.get('is_best_of_5', 1.0) == 1.0) & (df['set_number'] == 5)
+    is_final_set_bo3 = (df.get('is_best_of_5', 1.0) == 0.0) & (df['set_number'] == 3)
+    is_final_set_actual = is_final_set_bo5 | is_final_set_bo3
     
     # Determina soglia per tie-break: 12-12 nel set finale, 6-6 altrimenti
-    tb_threshold = np.where(is_final_set_potential, 12, 6)
+    tb_threshold = np.where(is_final_set_actual, 12, 6)
     is_games_at_tb_threshold = (df['P1_games'] == df['P2_games']) & (df['P1_games'] >= tb_threshold)
     
     # Determina se i punteggi sono numerici (tie-break) o tennis standard
@@ -1741,8 +1714,9 @@ def build_clean_features_nn(df: pd.DataFrame):
     
     df['is_tiebreak'] = (is_games_at_tb_threshold & is_numeric_score).astype(float)
     
-    # Tie-break decisivo: tie-break nel set decisivo (12-12 nel 5° set)
-    df['is_decisive_tiebreak'] = (df['is_tiebreak'] == 1.0) & is_final_set_potential
+    # Tie-break decisivo: SOLO tie-break nel SET FINALE (12-12 al set 5)
+    # Non tutti i tie-break con set pari, solo quello del set 5/3
+    df['is_decisive_tiebreak'] = (df['is_tiebreak'] == 1.0) & is_final_set_actual
     
     # Punteggio nel tie-break (quando in tie-break, i punti sono già numerici)
     df['tb_p1_points'] = np.where(df['is_tiebreak'] == 1.0, df['P1_points'], 0.0)

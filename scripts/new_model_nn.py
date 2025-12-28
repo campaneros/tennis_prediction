@@ -313,7 +313,7 @@ def build_new_features(df):
     df['is_tiebreak'] = (is_games_at_threshold & is_numeric_score).astype(float)
     df['tb_p1_points'] = np.where(df['is_tiebreak'] == 1.0, df['P1_points'], 0.0)
     df['tb_p2_points'] = np.where(df['is_tiebreak'] == 1.0, df['P2_points'], 0.0)
-    df['is_decisive_tiebreak'] = (df['is_tiebreak'] == 1.0) & is_final_set
+    df['is_decisive_tiebreak'] = (df['is_tiebreak'] == 1.0) & is_final_set_possible
     
     # 4. Distance features (8 new features - KEY INNOVATION)
     df = calculate_distance_features(df)
@@ -412,19 +412,27 @@ def build_new_features(df):
     
     # Amplify weights for critical points
     critical_weight = np.ones(len(df))
+    
+    # Decisive tiebreak (12-12 in set 5): extremely important, almost like match points
+    critical_weight = np.where(
+        df.get('is_decisive_tiebreak', 0) > 0,
+        15.0,  # Decisive tiebreak points get 15x weight
+        critical_weight
+    )
+    
     critical_weight = np.where(
         (df['is_match_point_p1'] > 0) | (df['is_match_point_p2'] > 0), 
         25.0,  # Match points get 25x weight
         critical_weight
     )
     critical_weight = np.where(
-        ((df['is_set_point_p1'] > 0) | (df['is_set_point_p2'] > 0)) & (critical_weight == 1.0),
-        8.0,  # Set points get 8x weight (if not already match point)
+        ((df['is_set_point_p1'] > 0) | (df['is_set_point_p2'] > 0)) & (critical_weight <= 1.0),
+        2.0,  # Set points get only 2x weight (not as critical as match points)
         critical_weight
     )
     critical_weight = np.where(
-        ((df['is_break_point_p1'] > 0) | (df['is_break_point_p2'] > 0)) & (critical_weight == 1.0),
-        3.0,  # Break points get 3x weight
+        ((df['is_break_point_p1'] > 0) | (df['is_break_point_p2'] > 0)) & (critical_weight <= 1.0),
+        1.5,  # Break points get 1.5x weight
         critical_weight
     )
     
@@ -497,13 +505,15 @@ class MultiTaskTennisNN(nn.Module):
 
 
 def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0, 
-                is_match_point_p1=None, is_match_point_p2=None):
+                is_match_point_p1=None, is_match_point_p2=None,
+                is_set_point_p1=None, is_set_point_p2=None):
     """
-    Custom loss with four components:
+    Custom loss with five components:
     1. Multi-task BCE for match, set, game
     2. Consistency penalty (set outcome should influence match outcome)
     3. Temperature scaling for calibration
-    4. Match point penalty (force high prob when player has match point)
+    4. Match point penalty (force high prob ~0.85 when player has match point)
+    5. Set point penalty (force moderate prob ~0.70 when player has set point, NOT as high as match point)
     """
     
     # Apply temperature scaling with numerical stability
@@ -556,17 +566,41 @@ def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0,
     
     total_loss = total_loss + 0.5 * match_point_penalty
     
+    # Set point penalty: moderate (not as extreme as match point)
+    # Set points should have ~0.70 prob, not 0.85+
+    set_point_penalty = torch.tensor(0.0, device=pred_match_cal.device)
+    
+    if is_set_point_p1 is not None and is_set_point_p2 is not None:
+        # P1 set points (but NOT match points): penalize if pred < 0.65 or > 0.80
+        p1_sp_mask = (is_set_point_p1 > 0.5) & (is_match_point_p1 <= 0.5)
+        if p1_sp_mask.any():
+            # Want pred around 0.70 ± 0.05 range
+            p1_sp_too_low = torch.relu(0.65 - pred_match_cal[p1_sp_mask]).mean()
+            p1_sp_too_high = torch.relu(pred_match_cal[p1_sp_mask] - 0.80).mean()
+            set_point_penalty = set_point_penalty + p1_sp_too_low + p1_sp_too_high
+        
+        # P2 set points (but NOT match points): penalize if pred > 0.35 or < 0.20
+        p2_sp_mask = (is_set_point_p2 > 0.5) & (is_match_point_p2 <= 0.5)
+        if p2_sp_mask.any():
+            # Want pred around 0.30 ± 0.05 range
+            p2_sp_too_high = torch.relu(pred_match_cal[p2_sp_mask] - 0.35).mean()
+            p2_sp_too_low = torch.relu(0.20 - pred_match_cal[p2_sp_mask]).mean()
+            set_point_penalty = set_point_penalty + p2_sp_too_high + p2_sp_too_low
+    
+    total_loss = total_loss + 0.2 * set_point_penalty
+    
     return total_loss, {
         'match': loss_match.mean().item(),
         'set': loss_set.mean().item(),
         'game': loss_game.mean().item(),
         'consistency': consistency_loss.item(),
         'match_point_penalty': match_point_penalty.item(),
+        'set_point_penalty': set_point_penalty.item(),
     }
 
 
 def train_new_model(file_paths, model_out, gender="male", 
-                    hidden_dims=[128, 64], dropout=0.4, temperature=8.0,
+                    hidden_dims=[128, 64], dropout=0.4, temperature=12.0,
                     epochs=200, batch_size=1024, learning_rate=0.001,
                     early_stopping_patience=40):
     """
@@ -674,8 +708,14 @@ def train_new_model(file_paths, model_out, gender="male",
             batch_y_game = batch_y_game.to(device)
             batch_w = batch_w.to(device)
             
-            # Extract match point features (indices 23, 24 in FEATURE_COLUMNS)
-            # is_match_point_p1 is at index 23, is_match_point_p2 at index 24
+            # Extract critical point features from batch
+            # Based on FEATURE_COLUMNS order:
+            # - is_set_point_p1 is at index 21
+            # - is_set_point_p2 is at index 22
+            # - is_match_point_p1 is at index 23
+            # - is_match_point_p2 is at index 24
+            is_sp_p1 = batch_X[:, 21]
+            is_sp_p2 = batch_X[:, 22]
             is_mp_p1 = batch_X[:, 23]
             is_mp_p2 = batch_X[:, 24]
             
@@ -684,7 +724,7 @@ def train_new_model(file_paths, model_out, gender="male",
             
             loss, loss_components = custom_loss(
                 pred_dict, batch_y_match, batch_y_set, batch_y_game,
-                batch_w, temperature, is_mp_p1, is_mp_p2
+                batch_w, temperature, is_mp_p1, is_mp_p2, is_sp_p1, is_sp_p2
             )
             
             loss.backward()
