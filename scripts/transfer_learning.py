@@ -121,7 +121,7 @@ def fine_tune_on_real_data(
     
     # Build features (using existing pipeline)
     print("\n[3/5] Computing features from real data...")
-    df = calculate_distance_features(df)
+    # build_new_features will call calculate_distance_features internally and return match_ids
     X_train, y_train_match, y_train_set, y_train_game, sample_weights, match_ids = build_new_features(df)
     
     print(f"  Features shape: {X_train.shape}")

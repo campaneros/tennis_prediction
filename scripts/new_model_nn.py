@@ -159,9 +159,9 @@ def calculate_distance_features(df):
     # Match point: if I win THIS point, I win the match
     # Conditions: (1) one set away, (2) one game away from set, (3) one point away from game
     # For tiebreaks: also check tiebreak points
-    is_tiebreak = df.get('is_tiebreak', 0) > 0
-    tb_p1 = pd.to_numeric(df.get('tb_p1_points', 0), errors='coerce').fillna(0)
-    tb_p2 = pd.to_numeric(df.get('tb_p2_points', 0), errors='coerce').fillna(0)
+    is_tiebreak = df['is_tiebreak'] > 0 if 'is_tiebreak' in df.columns else pd.Series(False, index=df.index)
+    tb_p1 = pd.to_numeric(df['tb_p1_points'], errors='coerce').fillna(0) if 'tb_p1_points' in df.columns else pd.Series(0, index=df.index)
+    tb_p2 = pd.to_numeric(df['tb_p2_points'], errors='coerce').fillna(0) if 'tb_p2_points' in df.columns else pd.Series(0, index=df.index)
     
     # Determine sets needed to win match from match FORMAT (not from sets played!)
     # Use is_best_of_5 feature or infer from tournament structure
@@ -446,6 +446,7 @@ def build_new_features(df):
     y_set_clean = y_set[mask]
     y_game_clean = y_game[mask]
     weights_clean = weights[mask] if hasattr(weights, '__len__') else np.ones(X.shape[0])
+    match_ids_clean = df[MATCH_COL].values[mask]
     
     # Only print statistics once for full dataset (not during incremental builds)
     # Check if this is likely an incremental build (small dataset with many missing features)
@@ -458,7 +459,7 @@ def build_new_features(df):
         print(f"                          {int((df['is_set_point_p1'] + df['is_set_point_p2']).sum())} set points")
         print(f"                          {int((df['is_break_point_p1'] + df['is_break_point_p2']).sum())} break points")
     
-    return X, y_match_clean, y_set_clean, y_game_clean, weights_clean, FEATURE_COLUMNS
+    return X, y_match_clean, y_set_clean, y_game_clean, weights_clean, match_ids_clean
 
 
 class MultiTaskTennisNN(nn.Module):
