@@ -10,6 +10,12 @@ from .hyperopt import run_hyperopt
 from .plotting import plot_match_probabilities
 from .pretrain_tennis_rules import pretrain_tennis_rules
 from .transfer_learning import fine_tune_on_real_data
+from .point_nn_training import (
+    train_point_nn,
+    predict_point_nn,
+    pretrain_point_nn,
+    finetune_point_nn,
+)
 import pandas as pd
 import os
 
@@ -91,6 +97,110 @@ def main():
     train_point_p.add_argument("--config", default=None,
                               help="Path to JSON config file (default: config.json)")
 
+    # TRAIN-POINT-NN (advanced neural point model)
+    train_point_nn_p = subparsers.add_parser("train-point-nn", help="Train neural model for point-level probabilities")
+    train_point_nn_p.add_argument("--files", nargs="+", required=True,
+                                  help="List of CSV point-by-point files")
+    train_point_nn_p.add_argument("--model-out", required=True,
+                                  help="Path to save trained model (pth)")
+    train_point_nn_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
+                                  help="Filter dataset by gender")
+    train_point_nn_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+                                  help="Device to use for training")
+    train_point_nn_p.add_argument("--epochs", type=int, default=25,
+                                  help="Training epochs")
+    train_point_nn_p.add_argument("--batch-size", type=int, default=2048,
+                                  help="Batch size")
+    train_point_nn_p.add_argument("--lr", type=float, default=3e-4,
+                                  help="Learning rate")
+    train_point_nn_p.add_argument("--weight-decay", type=float, default=1e-4,
+                                  help="Weight decay")
+    train_point_nn_p.add_argument("--dropout", type=float, default=0.15,
+                                  help="Dropout rate")
+    train_point_nn_p.add_argument("--long-window", type=int, default=24,
+                                  help="Long rolling window for serve/return stats")
+    train_point_nn_p.add_argument("--short-window", type=int, default=8,
+                                  help="Short rolling window for serve/return stats")
+    train_point_nn_p.add_argument("--history-points", type=int, default=12,
+                                  help="Points used for recent form rolling mean")
+    train_point_nn_p.add_argument("--weight-exp", type=float, default=0.6,
+                                  help="Exponent for point importance in sample weights")
+
+    # PREDICT-POINT-NN
+    predict_point_nn_p = subparsers.add_parser("predict-point-nn", help="Predict point-level probabilities with neural model")
+    predict_point_nn_p.add_argument("--files", nargs="+", required=True,
+                                    help="List of CSV point-by-point files")
+    predict_point_nn_p.add_argument("--model", required=True,
+                                    help="Path to trained neural model checkpoint")
+    predict_point_nn_p.add_argument("--output", default=None,
+                                    help="Optional path to save CSV with probabilities")
+    predict_point_nn_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
+                                    help="Filter dataset by gender")
+    predict_point_nn_p.add_argument("--device", choices=["cuda", "cpu"], default="cpu",
+                                    help="Device for inference")
+    predict_point_nn_p.add_argument("--batch-size", type=int, default=4096,
+                                    help="Batch size for prediction")
+    predict_point_nn_p.add_argument("--plot-dir", default=None,
+                                    help="Directory to save PNG/HTML plots (optional)")
+    predict_point_nn_p.add_argument("--match-id", default=None,
+                                    help="Match ID to plot (requires --plot-dir)")
+    predict_point_nn_p.add_argument("--temperature", type=float, default=1.0,
+                                    help="Temperature scaling (>1 reduces extremes)")
+    predict_point_nn_p.add_argument("--smooth-window", type=int, default=5,
+                                    help="Rolling window (points) to smooth probabilities")
+    predict_point_nn_p.add_argument("--rule-blend", type=float, default=0.35,
+                                    help="Blend weight with rule-based prior (0-1)")
+
+    # PRETRAIN-POINT-NN (synthetic)
+    pretrain_point_nn_p = subparsers.add_parser("pretrain-point-nn", help="Pre-train point NN on synthetic matches to learn rules")
+    pretrain_point_nn_p.add_argument("--n-matches", type=int, default=50000,
+                                     help="Number of synthetic matches to generate")
+    pretrain_point_nn_p.add_argument("--model-out", required=True,
+                                     help="Path to save pre-trained checkpoint (pth)")
+    pretrain_point_nn_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+                                     help="Device for training")
+    pretrain_point_nn_p.add_argument("--epochs", type=int, default=15,
+                                     help="Training epochs")
+    pretrain_point_nn_p.add_argument("--batch-size", type=int, default=4096,
+                                     help="Batch size")
+    pretrain_point_nn_p.add_argument("--lr", type=float, default=5e-4,
+                                     help="Learning rate")
+    pretrain_point_nn_p.add_argument("--weight-decay", type=float, default=1e-4,
+                                     help="Weight decay")
+    pretrain_point_nn_p.add_argument("--best-of-5-prob", type=float, default=0.6,
+                                     help="Probability a synthetic match is best-of-5")
+    pretrain_point_nn_p.add_argument("--long-window", type=int, default=24,
+                                     help="Long rolling window for serve/return stats")
+    pretrain_point_nn_p.add_argument("--short-window", type=int, default=8,
+                                     help="Short rolling window for serve/return stats")
+    pretrain_point_nn_p.add_argument("--history-points", type=int, default=12,
+                                     help="Points used for recent form rolling mean")
+    pretrain_point_nn_p.add_argument("--weight-exp", type=float, default=0.6,
+                                     help="Exponent for point importance weighting")
+
+    # FINETUNE-POINT-NN (real data)
+    finetune_point_nn_p = subparsers.add_parser("finetune-point-nn", help="Fine-tune pre-trained point NN on real data")
+    finetune_point_nn_p.add_argument("--files", nargs="+", required=True,
+                                     help="List of CSV point-by-point files")
+    finetune_point_nn_p.add_argument("--pretrained", required=True,
+                                     help="Path to pre-trained checkpoint")
+    finetune_point_nn_p.add_argument("--model-out", required=True,
+                                     help="Path to save fine-tuned model (pth)")
+    finetune_point_nn_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
+                                     help="Filter dataset by gender")
+    finetune_point_nn_p.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
+                                     help="Device for training")
+    finetune_point_nn_p.add_argument("--epochs", type=int, default=10,
+                                     help="Training epochs")
+    finetune_point_nn_p.add_argument("--batch-size", type=int, default=2048,
+                                     help="Batch size")
+    finetune_point_nn_p.add_argument("--lr", type=float, default=1e-4,
+                                     help="Learning rate")
+    finetune_point_nn_p.add_argument("--weight-decay", type=float, default=1e-4,
+                                     help="Weight decay")
+    finetune_point_nn_p.add_argument("--weight-exp", type=float, default=0.6,
+                                     help="Exponent for point importance weighting")
+
     # PREDICT
     pred_p = subparsers.add_parser("predict", help="Predict probabilities and plot")
     pred_p.add_argument("--files", nargs="+", required=True,
@@ -157,6 +267,68 @@ def main():
     
     elif args.command == "train-point":
         train_point_model(args.files, args.model_out, config_path=args.config)
+
+    elif args.command == "train-point-nn":
+        train_point_nn(
+            file_paths=args.files,
+            model_out=args.model_out,
+            gender=args.gender,
+            device=args.device,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            long_window=args.long_window,
+            short_window=args.short_window,
+            history_points=args.history_points,
+            dropout=args.dropout,
+            weight_exp=args.weight_exp,
+        )
+
+    elif args.command == "predict-point-nn":
+        predict_point_nn(
+            file_paths=args.files,
+            model_path=args.model,
+            output_path=args.output,
+            gender=args.gender,
+            device=args.device,
+            batch_size=args.batch_size,
+            plot_dir=args.plot_dir,
+            match_id=args.match_id,
+            temperature=args.temperature,
+            smooth_window=args.smooth_window,
+            rule_blend=args.rule_blend,
+        )
+
+    elif args.command == "pretrain-point-nn":
+        pretrain_point_nn(
+            n_matches=args.n_matches,
+            model_out=args.model_out,
+            device=args.device,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            long_window=args.long_window,
+            short_window=args.short_window,
+            history_points=args.history_points,
+            best_of_5_prob=args.best_of_5_prob,
+            weight_exp=args.weight_exp,
+        )
+
+    elif args.command == "finetune-point-nn":
+        finetune_point_nn(
+            file_paths=args.files,
+            pretrained_path=args.pretrained,
+            model_out=args.model_out,
+            gender=args.gender,
+            device=args.device,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            weight_exp=args.weight_exp,
+        )
 
     elif args.command == "predict":
         mode = getattr(args, 'mode', 'importance')

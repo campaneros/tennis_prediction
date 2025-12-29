@@ -1,0 +1,67 @@
+/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/data_loader.py:27: DtypeWarning: Columns (14) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(path)
+
+================================================================================
+STARTING PHASE 2: FINE-TUNING ON REAL MATCHES
+================================================================================
+
+================================================================================
+PHASE 2: FINE-TUNING ON REAL MATCH DATA
+================================================================================
+
+[1/5] Loading pre-trained model...
+Loading pre-trained model from models/tennis_rules_100k.pth...
+  ✓ Loaded model pre-trained on 100000 synthetic matches
+  ✓ Architecture: [128, 64]
+  ✓ Temperature: 3.0
+
+[2/5] Loading real match data...
+[load_points_single] Removed 346 metadata rows from data/2017-usopen-points.csv
+[load_points_single] Removed 356 metadata rows from data/2018-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2018-wimbledon-points.csv
+[load_points_single] Removed 502 metadata rows from data/2019-usopen-points.csv
+[load_points_single] Removed 508 metadata rows from data/2019-wimbledon-points.csv
+[load_points_single] Removed 496 metadata rows from data/2020-usopen-points.csv
+[load_points_single] Removed 508 metadata rows from data/2021-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2021-wimbledon-points.csv
+[load_points_single] Removed 664 metadata rows from data/2022-usopen-points.csv
+[load_points_single] Removed 513 metadata rows from data/2022-wimbledon-points.csv
+[load_points_single] Removed 506 metadata rows from data/2023-usopen-points.csv
+[load_points_single] Removed 512 metadata rows from data/2023-wimbledon-points.csv
+[load_points_single] Removed 506 metadata rows from data/2024-usopen-points.csv
+[load_points_single] Removed 511 metadata rows from data/2024-wimbledon-points.csv
+  Gender filter: male
+  Total points loaded: 1151016
+  Matches: 5162
+
+[3/5] Computing features from real data...
+  Features shape: (1151016, 31)
+  Matches: 5162
+  Match label distribution: 0.415
+  Train: 915996 points from 4129 matches
+  Val: 235020 points from 1033 matches
+  Using device: cpu
+
+[4/5] Fine-tuning for 30 epochs...
+  Epoch 1/30 - Train Loss: 4.9425, Val Loss: 3.6868
+  Epoch 5/30 - Train Loss: 2.7057, Val Loss: 2.5560
+  Epoch 10/30 - Train Loss: 1.7107, Val Loss: 1.6881
+  Epoch 15/30 - Train Loss: 1.4906, Val Loss: 1.5453
+  Epoch 20/30 - Train Loss: 1.3862, Val Loss: 1.4597
+  Epoch 25/30 - Train Loss: 1.3377, Val Loss: 1.4172
+  Epoch 30/30 - Train Loss: 1.3052, Val Loss: 1.3889
+
+[5/5] Saving fine-tuned model...
+
+================================================================================
+Fine-tuning summary:
+  - Pre-trained on: 100000 synthetic matches
+  - Fine-tuned on: 4129 real matches (915996 points)
+  - Best validation loss: 1.3889
+  - Model saved to: models/complete_model_v2.pth
+================================================================================
+
+
+✓ Phase 2 complete! Fine-tuned model ready for predictions.
+  Use: python tennisctl.py predict --model models/complete_model_v2.pth ...
+

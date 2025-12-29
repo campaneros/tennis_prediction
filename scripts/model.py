@@ -1,6 +1,8 @@
 import os
 import json
 import numpy as np
+import torch
+import torch.nn as nn
 from xgboost import XGBClassifier, XGBRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -213,7 +215,42 @@ def predict_with_model(model, X):
         P(P1 wins) predictions as numpy array
     """
     # Check if it's a PyTorch model
-    if hasattr(model, 'network'):  # TennisNN has 'network' attribute
+    import torch.nn as nn
+    if isinstance(model, nn.Module):
+        # PyTorch neural network (TennisNN, TennisRulesNet, or MultiTaskTennisNN)
+        with torch.no_grad():
+            model.eval()
+            X_tensor = torch.FloatTensor(X)
+            output = model(X_tensor)
+            
+            # Handle different output formats
+            if isinstance(output, dict):
+                # Multi-task model returns dict with 'match', 'set', 'game' keys
+                # Already has sigmoid applied, but might need temperature recalibration
+                probs = output['match'].squeeze()
+                
+                # If model has temperature attribute, apply inverse then re-apply
+                # This is needed because forward() applies sigmoid but training used temperature
+                if hasattr(model, 'temperature') and model.temperature != 1.0:
+                    # Convert back to logits approximately: logit = log(p/(1-p))
+                    eps = 1e-7
+                    probs_clipped = torch.clamp(probs, eps, 1-eps)
+                    logits = torch.log(probs_clipped / (1 - probs_clipped))
+                    # Apply temperature scaling: divide logits by temperature
+                    calibrated_logits = logits / model.temperature
+                    # Apply sigmoid to get calibrated probabilities
+                    probs = torch.sigmoid(calibrated_logits)
+                
+                probs = probs.cpu().numpy()
+            elif isinstance(output, tuple):
+                # Old format: (match_logits, set_logits, game_logits)
+                probs = torch.sigmoid(output[0]).squeeze().cpu().numpy()
+            else:
+                # Single output
+                probs = output.squeeze().cpu().numpy()
+            
+            return probs if probs.ndim > 0 else np.array([probs])
+    elif hasattr(model, 'network'):  # TennisNN has 'network' attribute
         from .model_nn import predict_nn
         return predict_nn(model, X)
     else:

@@ -1,0 +1,167 @@
+nohup: input ignorato
+================================================================================
+STEP 1: PRE-TRAINING ON SYNTHETIC DATA
+================================================================================
+================================================================================
+PHASE 1: PRE-TRAINING ON SYNTHETIC TENNIS MATCHES
+================================================================================
+
+[1/4] Generating 30000 synthetic matches...
+Generating 30000 synthetic tennis matches...
+  Generated 1000/30000 matches...
+  Generated 2000/30000 matches...
+  Generated 3000/30000 matches...
+  Generated 4000/30000 matches...
+  Generated 5000/30000 matches...
+  Generated 6000/30000 matches...
+  Generated 7000/30000 matches...
+  Generated 8000/30000 matches...
+  Generated 9000/30000 matches...
+  Generated 10000/30000 matches...
+  Generated 11000/30000 matches...
+  Generated 12000/30000 matches...
+  Generated 13000/30000 matches...
+  Generated 14000/30000 matches...
+  Generated 15000/30000 matches...
+  Generated 16000/30000 matches...
+  Generated 17000/30000 matches...
+  Generated 18000/30000 matches...
+  Generated 19000/30000 matches...
+  Generated 20000/30000 matches...
+  Generated 21000/30000 matches...
+  Generated 22000/30000 matches...
+  Generated 23000/30000 matches...
+  Generated 24000/30000 matches...
+  Generated 25000/30000 matches...
+  Generated 26000/30000 matches...
+  Generated 27000/30000 matches...
+  Generated 28000/30000 matches...
+  Generated 29000/30000 matches...
+  Generated 30000/30000 matches...
+Generated 6019723 total points from 30000 matches
+Average points per match: 200.7
+[2/4] Computing features...
+  Processing 6019723 points from 30000 matches...
+  ✓ Features computed: (6019723, 31)
+  Computing labels (vectorized)...
+  ✓ Labels computed
+  Total points: 6019723
+  Features: 31
+  Match label distribution: 0.884
+[3/4] Computing sample weights...
+  Match points: 61938
+  Set points: 245958
+  Break points: 482714
+  Decisive tiebreaks: 172
+  Using device: cpu
+
+[4/4] Training for 40 epochs...
+  Total batches per epoch: 2940
+  Epoch 1/40 - Loss: 0.7586
+  Epoch 2/40 - Loss: 0.7187
+  Epoch 3/40 - Loss: 0.7130
+  Epoch 4/40 - Loss: 0.7103
+  Epoch 5/40 - Loss: 0.7086
+  Epoch 6/40 - Loss: 0.7074
+  Epoch 7/40 - Loss: 0.7068
+  Epoch 8/40 - Loss: 0.7060
+  Epoch 9/40 - Loss: 0.7055
+  Epoch 10/40 - Loss: 0.7047
+  Epoch 11/40 - Loss: 0.7050
+  Epoch 12/40 - Loss: 0.7047
+  Epoch 13/40 - Loss: 0.7042
+  Epoch 14/40 - Loss: 0.7039
+  Epoch 15/40 - Loss: 0.7036
+  Epoch 16/40 - Loss: 0.7035
+  Epoch 17/40 - Loss: 0.7032
+  Epoch 18/40 - Loss: 0.7029
+  Epoch 19/40 - Loss: 0.7028
+  Epoch 20/40 - Loss: 0.7028
+  Epoch 21/40 - Loss: 0.7024
+  Epoch 22/40 - Loss: 0.7025
+  Epoch 23/40 - Loss: 0.7022
+  Epoch 24/40 - Loss: 0.7023
+  Epoch 25/40 - Loss: 0.7021
+  Epoch 26/40 - Loss: 0.7021
+  Epoch 27/40 - Loss: 0.7019
+  Epoch 28/40 - Loss: 0.7017
+  Epoch 29/40 - Loss: 0.7021
+  Epoch 30/40 - Loss: 0.7015
+  Epoch 31/40 - Loss: 0.7015
+  Epoch 32/40 - Loss: 0.7017
+  Epoch 33/40 - Loss: 0.7015
+  Epoch 34/40 - Loss: 0.7014
+  Epoch 35/40 - Loss: 0.7017
+  Epoch 36/40 - Loss: 0.7016
+  Epoch 37/40 - Loss: 0.7012
+  Epoch 38/40 - Loss: 0.7009
+  Epoch 39/40 - Loss: 0.7011
+  Epoch 40/40 - Loss: 0.7011
+
+[✓] Pre-training complete!
+    Saving pre-trained weights to models/tennis_rules_pretrained_v3.pth
+
+================================================================================
+Pre-training summary:
+  - Trained on 30000 synthetic matches (6019723 points)
+  - Final loss: 0.7011
+  - Model saved to: models/tennis_rules_pretrained_v3.pth
+  - Ready for Phase 2: Fine-tuning on real data
+================================================================================
+
+
+================================================================================
+STEP 2: FINE-TUNING ON REAL DATA
+================================================================================
+
+Training on 45 files (excluding 2019 test data)
+================================================================================
+PHASE 2: FINE-TUNING ON REAL MATCH DATA
+================================================================================
+
+[1/5] Loading pre-trained model...
+Loading pre-trained model from models/tennis_rules_pretrained_v3.pth...
+Traceback (most recent call last):
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/retrain_model.py", line 33, in <module>
+    fine_tune_on_real_data(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        files=files,
+        ^^^^^^^^^^^^
+    ...<7 lines>...
+        freeze_layers=False
+        ^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/transfer_learning.py", line 82, in fine_tune_on_real_data
+    model, pretrain_info = load_pretrained_model(pretrained_path, device)
+                           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/transfer_learning.py", line 31, in load_pretrained_model
+    checkpoint = torch.load(pretrained_path, map_location=device)
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 1521, in load
+    return _load(
+        opened_zipfile,
+    ...<3 lines>...
+        **pickle_load_args,
+    )
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 2122, in _load
+    result = unpickler.load()
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/_weights_only_unpickler.py", line 535, in load
+    self.append(self.persistent_load(pid))
+                ~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 2086, in persistent_load
+    typed_storage = load_tensor(
+        dtype, nbytes, key, _maybe_decode_ascii(location)
+    )
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 2052, in load_tensor
+    wrap_storage = restore_location(storage, location)
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 1859, in restore_location
+    return default_restore_location(storage, map_location)
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 698, in default_restore_location
+    result = fn(storage, location)
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 636, in _deserialize
+    device = _validate_device(location, backend_name)
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/venv/lib/python3.13/site-packages/torch/serialization.py", line 605, in _validate_device
+    raise RuntimeError(
+    ...<5 lines>...
+    )
+RuntimeError: Attempting to deserialize object on a CUDA device but torch.cuda.is_available() is False. If you are running on a CPU-only machine, please use torch.load with map_location=torch.device('cpu') to map your storages to the CPU.

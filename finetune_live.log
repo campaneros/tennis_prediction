@@ -1,0 +1,57 @@
+/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/data_loader.py:27: DtypeWarning: Columns (14) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(path)
+Fine-tuning on 45 files
+================================================================================
+PHASE 2: FINE-TUNING ON REAL MATCH DATA
+================================================================================
+
+[1/5] Loading pre-trained model...
+Loading pre-trained model from models/tennis_rules_pretrained_v3.pth...
+  ✓ Loaded model pre-trained on 30000 synthetic matches
+  ✓ Architecture: [128, 64]
+  ✓ Temperature: 3.0
+
+[2/5] Loading real match data...
+[load_points_single] Removed 346 metadata rows from data/2017-usopen-points.csv
+[load_points_single] Removed 356 metadata rows from data/2018-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2018-wimbledon-points.csv
+[load_points_single] Removed 496 metadata rows from data/2020-usopen-points.csv
+[load_points_single] Removed 508 metadata rows from data/2021-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2021-wimbledon-points.csv
+[load_points_single] Removed 664 metadata rows from data/2022-usopen-points.csv
+[load_points_single] Removed 513 metadata rows from data/2022-wimbledon-points.csv
+[load_points_single] Removed 506 metadata rows from data/2023-usopen-points.csv
+[load_points_single] Removed 512 metadata rows from data/2023-wimbledon-points.csv
+[load_points_single] Removed 506 metadata rows from data/2024-usopen-points.csv
+[load_points_single] Removed 511 metadata rows from data/2024-wimbledon-points.csv
+  Gender filter: male
+  Total points loaded: 1036476
+  Matches: 4660
+
+[3/5] Computing features from real data...
+  Features shape: (1036476, 31)
+  Matches: 4660
+  Match label distribution: 0.432
+  Train: 824841 points from 3728 matches
+  Val: 211635 points from 932 matches
+  Using device: cpu
+
+[4/5] Fine-tuning for 30 epochs...
+Traceback (most recent call last):
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/finetune_only.py", line 13, in <module>
+    fine_tune_on_real_data(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        files=files,
+        ^^^^^^^^^^^^
+    ...<8 lines>...
+        device='cpu'  # Force CPU since CUDA not available
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/transfer_learning.py", line 214, in fine_tune_on_real_data
+    loss_result = custom_loss(
+        pred, batch_y_match, batch_y_set, batch_y_game,
+    ...<3 lines>...
+        batch_p1_sets, batch_p2_sets
+    )
+TypeError: custom_loss() takes from 5 to 10 positional arguments but 12 were given

@@ -28,6 +28,11 @@ def load_pretrained_model(pretrained_path: str, device='cuda') -> TennisRulesNet
     """Load pre-trained model from checkpoint."""
     print(f"Loading pre-trained model from {pretrained_path}...")
     
+    # Force CPU if CUDA not available
+    if device == 'cuda' and not torch.cuda.is_available():
+        device = 'cpu'
+        print("  Warning: CUDA not available, using CPU")
+    
     checkpoint = torch.load(pretrained_path, map_location=device)
     
     model = TennisRulesNet(
@@ -54,7 +59,7 @@ def fine_tune_on_real_data(
     epochs: int = 30,
     batch_size: int = 1024,
     learning_rate: float = 0.0001,  # Lower LR for fine-tuning
-    temperature: float = 12.0,
+    temperature: float = 3.0,
     freeze_layers: bool = False,
     device: str = 'cuda'
 ):
@@ -180,7 +185,7 @@ def fine_tune_on_real_data(
     # Setup optimizer (lower learning rate for fine-tuning)
     print(f"\n[4/5] Fine-tuning for {epochs} epochs...")
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), 
-                          lr=learning_rate)
+                          lr=learning_rate, weight_decay=0.01)
     
     # Training loop
     model.train()
@@ -199,21 +204,29 @@ def fine_tune_on_real_data(
             batch_is_mp_p2 = batch_X[:, 27]
             batch_is_sp_p1 = batch_X[:, 24]
             batch_is_sp_p2 = batch_X[:, 25]
+            batch_p1_sets = batch_X[:, 4]  # P1SetsWon feature
+            batch_p2_sets = batch_X[:, 5]  # P2SetsWon feature
             
             # Forward pass
             pred = model(batch_X)
             
-            # Use the same custom loss as training
-            loss = custom_loss(
+            # Use the same custom loss as training (returns tuple: loss, metrics_dict)
+            loss_result = custom_loss(
                 pred, batch_y_match, batch_y_set, batch_y_game,
                 batch_weights, temperature,
                 batch_is_mp_p1, batch_is_mp_p2,
-                batch_is_sp_p1, batch_is_sp_p2
+                batch_is_sp_p1, batch_is_sp_p2,
+                batch_p1_sets, batch_p2_sets
             )
+            
+            # Extract the loss tensor from the result
+            loss = loss_result[0] if isinstance(loss_result, tuple) else loss_result
             
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
+            # Gradient clipping to prevent explosion
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             train_loss += loss.item()
@@ -232,14 +245,20 @@ def fine_tune_on_real_data(
                 batch_is_mp_p2 = batch_X[:, 27]
                 batch_is_sp_p1 = batch_X[:, 24]
                 batch_is_sp_p2 = batch_X[:, 25]
+                batch_p1_sets = batch_X[:, 4]
+                batch_p2_sets = batch_X[:, 5]
                 
                 pred = model(batch_X)
-                loss = custom_loss(
+                loss_result = custom_loss(
                     pred, batch_y_match, batch_y_set, batch_y_game,
                     batch_weights, temperature,
                     batch_is_mp_p1, batch_is_mp_p2,
-                    batch_is_sp_p1, batch_is_sp_p2
+                    batch_is_sp_p1, batch_is_sp_p2,
+                    batch_p1_sets, batch_p2_sets
                 )
+                
+                # Extract the loss tensor from the result
+                loss = loss_result[0] if isinstance(loss_result, tuple) else loss_result
                 
                 val_loss += loss.item()
                 n_val_batches += 1

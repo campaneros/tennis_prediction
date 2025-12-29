@@ -15,7 +15,11 @@ import json
 from pathlib import Path
 from typing import Tuple, Dict
 
-from .tennis_simulator import generate_training_dataset
+# Try relative import first (when used as module), fall back to absolute
+try:
+    from .tennis_simulator import generate_training_dataset
+except ImportError:
+    from tennis_simulator import generate_training_dataset
 
 
 def compute_tennis_features(df: pd.DataFrame) -> np.ndarray:
@@ -222,10 +226,15 @@ class TennisRulesNet(nn.Module):
         set_logits = self.set_head(x)
         game_logits = self.game_head(x)
         
-        return match_logits, set_logits, game_logits
+        # Return dict for compatibility with custom_loss in transfer learning
+        return {
+            'match': torch.sigmoid(match_logits),
+            'set': torch.sigmoid(set_logits),
+            'game': torch.sigmoid(game_logits),
+        }
 
 
-def custom_loss_pretrain(pred, y_match, y_set, y_game, weights, temperature=10.0,
+def custom_loss_pretrain(pred, y_match, y_set, y_game, weights, temperature=3.0,
                         is_mp_p1=None, is_mp_p2=None, is_sp_p1=None, is_sp_p2=None):
     """
     Custom loss for pre-training on synthetic data.
@@ -237,12 +246,18 @@ def custom_loss_pretrain(pred, y_match, y_set, y_game, weights, temperature=10.0
     4. Match point penalty (force high confidence at match points)
     5. Set point penalty (force moderate confidence at set points)
     """
-    device = pred[0].device
-    
-    # 1. Multi-task BCE
-    match_prob = torch.sigmoid(pred[0] / temperature)
-    set_prob = torch.sigmoid(pred[1] / temperature)
-    game_prob = torch.sigmoid(pred[2] / temperature)
+    # Handle both dict (new format) and tuple (old format) for backward compatibility
+    if isinstance(pred, dict):
+        match_prob = pred['match']
+        set_prob = pred['set']
+        game_prob = pred['game']
+        device = match_prob.device
+    else:
+        device = pred[0].device
+        # 1. Multi-task BCE
+        match_prob = torch.sigmoid(pred[0] / temperature)
+        set_prob = torch.sigmoid(pred[1] / temperature)
+        game_prob = torch.sigmoid(pred[2] / temperature)
     
     loss_match = nn.BCELoss(weight=weights)(match_prob.squeeze(), y_match)
     loss_set = nn.BCELoss(weight=weights)(set_prob.squeeze(), y_set)
@@ -265,7 +280,7 @@ def custom_loss_pretrain(pred, y_match, y_set, y_game, weights, temperature=10.0
         mp_p2_penalty = mp_p2_mask * torch.relu(match_prob.squeeze() - 0.15)
         
         match_point_loss = torch.mean(mp_p1_penalty + mp_p2_penalty)
-        total_loss += 5.0 * match_point_loss
+        total_loss += 0.5 * match_point_loss
     
     # 4. Set point penalty (enforce ~0.70 for P1, ~0.30 for P2)
     if is_sp_p1 is not None and is_sp_p2 is not None:
@@ -281,7 +296,7 @@ def custom_loss_pretrain(pred, y_match, y_set, y_game, weights, temperature=10.0
         sp_p2_penalty = sp_p2_mask * torch.abs(match_prob.squeeze() - target_p2)
         
         set_point_loss = torch.mean(sp_p1_penalty + sp_p2_penalty)
-        total_loss += 2.0 * set_point_loss
+        total_loss += 0.3 * set_point_loss
     
     return total_loss
 
@@ -398,6 +413,8 @@ def pretrain_tennis_rules(n_matches=50000, epochs=50, batch_size=2048,
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
+            # Gradient clipping to prevent explosion
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             epoch_loss += loss.item()

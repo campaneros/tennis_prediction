@@ -507,7 +507,8 @@ class MultiTaskTennisNN(nn.Module):
 
 def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0, 
                 is_match_point_p1=None, is_match_point_p2=None,
-                is_set_point_p1=None, is_set_point_p2=None):
+                is_set_point_p1=None, is_set_point_p2=None,
+                p1_sets_won=None, p2_sets_won=None):
     """
     Custom loss with five components:
     1. Multi-task BCE for match, set, game
@@ -601,7 +602,7 @@ def custom_loss(pred_dict, y_match, y_set, y_game, weights, temperature=3.0,
 
 
 def train_new_model(file_paths, model_out, gender="male", 
-                    hidden_dims=[128, 64], dropout=0.4, temperature=12.0,
+                    hidden_dims=[128, 64], dropout=0.4, temperature=3.0,
                     epochs=200, batch_size=1024, learning_rate=0.001,
                     early_stopping_patience=40):
     """

@@ -23,6 +23,15 @@ from .new_model_nn import MultiTaskTennisNN, build_new_features
 
 def _uses_clean_features(model):
     """Check if model was trained with clean features."""
+    import torch.nn as nn
+    
+    # Check if it's a PyTorch TennisRulesNet or MultiTaskTennisNN (31 features)
+    if isinstance(model, nn.Module):
+        # Check class name
+        class_name = model.__class__.__name__
+        if class_name in ['TennisRulesNet', 'MultiTaskTennisNN']:
+            return 'multi_task'
+    
     # Multi-task model always uses new features (23 features)
     if hasattr(model, 'model_type') and model.model_type == 'multi_task_nn':
         return 'multi_task'
@@ -1196,16 +1205,45 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
         print(f"[predict] Set is_best_of_5=1.0 (best-of-5 format assumed for Grand Slam)")
     
     # Load model first to know which features to use (check if multi-task)
-    with open(model_path, 'r') as f:
-        model_data = json.load(f)
-    
-    if model_data.get('model_type') == 'multi_task_nn':
-        model = load_multitask_model(model_path)
-        print(f"[predict] Loaded MULTI-TASK model (23 distance features)")
-        is_multitask = True
-    else:
-        model = load_model(model_path)
-        is_multitask = False
+    # Try to load as PyTorch model first (new format), fallback to JSON (old format)
+    try:
+        checkpoint = torch.load(model_path, map_location='cpu')
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            # New PyTorch multi-task model
+            from .pretrain_tennis_rules import TennisRulesNet
+            
+            # Load using the same architecture
+            model_nn = TennisRulesNet(
+                input_size=checkpoint.get('input_size', 31),
+                hidden_sizes=checkpoint.get('hidden_sizes', [128, 64]),
+                dropout=checkpoint.get('dropout', 0.4)
+            )
+            model_nn.load_state_dict(checkpoint['model_state_dict'])
+            model_nn.eval()
+            # Attach temperature for calibration during inference
+            model_nn.temperature = checkpoint.get('temperature', 12.0)
+            model = model_nn
+            print(f"[predict] Loaded PyTorch MULTI-TASK model (31 features, temperature={model_nn.temperature})")
+            is_multitask = True
+        else:
+            raise ValueError("Unknown PyTorch model format")
+    except Exception as e:
+        # Old JSON format
+        try:
+            with open(model_path, 'r') as f:
+                model_data = json.load(f)
+            
+            if model_data.get('model_type') == 'multi_task_nn':
+                model = load_multitask_model(model_path)
+                print(f"[predict] Loaded MULTI-TASK model (23 distance features)")
+                is_multitask = True
+            else:
+                model = load_model(model_path)
+                is_multitask = False
+        except Exception as json_error:
+            print(f"Error loading model: {e}")
+            print(f"Fallback JSON error: {json_error}")
+            raise
     
     use_clean = _uses_clean_features(model)
     
