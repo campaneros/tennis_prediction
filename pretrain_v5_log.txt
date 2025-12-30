@@ -1,0 +1,48 @@
+================================================================================
+PRE-TRAINING ON SYNTHETIC DATA - V4
+================================================================================
+
+[1/5] Loading synthetic data...
+  Loaded 12,039,446 points from 60k matches (balanced)
+  P1 win rate: 0.500 (should be 0.500)
+
+[2/5] Computing features...
+  Feature matrix shape: (12039446, 31)
+
+[3/5] Computing labels...
+  Computing labels (vectorized)...
+  Match label distribution: 0.500
+
+[4/5] Setting up training (device: cuda)...
+
+[4/5] Setting up training (device: cpu)...
+
+[5/5] Training for 20 epochs...
+  Temperature: 3.0
+  Weight decay: 0.01
+  Gradient clipping: max_norm=1.0
+  Match point penalty weight: 0.5 (was 5.0)
+  Set point penalty weight: 0.3 (was 2.0)
+  Epoch  1/20: loss=0.7239
+  Epoch  2/20: loss=0.7227
+  Epoch  3/20: loss=0.7227
+  Epoch  4/20: loss=0.7228
+  Epoch  5/20: loss=0.7229
+  Epoch  6/20: loss=0.7227
+  Epoch  7/20: loss=0.7227
+  Epoch  8/20: loss=0.7226
+  Epoch  9/20: loss=0.7227
+  Epoch 10/20: loss=0.7227
+  Epoch 11/20: loss=0.7227
+  Epoch 12/20: loss=0.7226
+  Epoch 13/20: loss=0.7227
+  Epoch 14/20: loss=0.7227
+  Epoch 15/20: loss=0.7227
+  Epoch 16/20: loss=0.7228
+  Epoch 17/20: loss=0.7227
+  Epoch 18/20: loss=0.7229
+  Epoch 19/20: loss=0.7228
+  Epoch 20/20: loss=0.7226
+
+[SAVE] Saving model to models/tennis_rules_pretrained_v5.pth...
+✓ Pre-training complete!

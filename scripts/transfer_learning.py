@@ -14,14 +14,25 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from .data_loader import load_points_multiple, MATCH_COL
-from .features import add_additional_features, add_match_labels
-from .new_model_nn import (
-    calculate_distance_features,
-    build_new_features,
-    custom_loss
-)
-from .pretrain_tennis_rules import TennisRulesNet
+# Try relative import first (when used as module), fall back to absolute
+try:
+    from .data_loader import load_points_multiple, MATCH_COL
+    from .features import add_additional_features, add_match_labels
+    from .new_model_nn import (
+        calculate_distance_features,
+        build_new_features,
+        custom_loss
+    )
+    from .pretrain_tennis_rules import TennisRulesNet
+except ImportError:
+    from data_loader import load_points_multiple, MATCH_COL
+    from features import add_additional_features, add_match_labels
+    from new_model_nn import (
+        calculate_distance_features,
+        build_new_features,
+        custom_loss
+    )
+    from pretrain_tennis_rules import TennisRulesNet
 
 
 def load_pretrained_model(pretrained_path: str, device='cuda') -> TennisRulesNet:
@@ -44,7 +55,9 @@ def load_pretrained_model(pretrained_path: str, device='cuda') -> TennisRulesNet
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     
-    print(f"  ✓ Loaded model pre-trained on {checkpoint['n_training_matches']} synthetic matches")
+    # Print info (with fallback for missing keys)
+    n_matches = checkpoint.get('n_training_matches', 'unknown')
+    print(f"  ✓ Loaded pre-trained model (trained on {n_matches} synthetic matches)")
     print(f"  ✓ Architecture: {checkpoint['hidden_sizes']}")
     print(f"  ✓ Temperature: {checkpoint['temperature']}")
     
@@ -297,7 +310,7 @@ def fine_tune_on_real_data(
         'dropout': 0.4,
         'temperature': temperature,
         'pretrained_from': pretrained_path,
-        'pretrain_matches': pretrain_info['n_training_matches'],
+        'pretrain_matches': pretrain_info.get('n_training_matches', 'unknown'),
         'finetune_points': len(X_train_split),
         'finetune_matches': len(train_match_ids),
         'best_val_loss': best_val_loss,
@@ -307,7 +320,7 @@ def fine_tune_on_real_data(
     
     print(f"\n{'='*80}")
     print("Fine-tuning summary:")
-    print(f"  - Pre-trained on: {pretrain_info['n_training_matches']} synthetic matches")
+    print(f"  - Pre-trained on: {pretrain_info.get('n_training_matches', 'unknown')} synthetic matches")
     print(f"  - Fine-tuned on: {len(train_match_ids)} real matches ({len(X_train_split)} points)")
     print(f"  - Best validation loss: {best_val_loss:.4f}")
     print(f"  - Model saved to: {output_path}")

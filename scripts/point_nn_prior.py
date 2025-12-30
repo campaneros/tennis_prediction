@@ -52,25 +52,41 @@ def compute_rule_prior(features_df: pd.DataFrame, blend_strength: float = 0.35) 
     # Apply effects in log-odds space for stability
     logit = _safe_logit(base)
 
+    # Progress in match: flatten early sets/games, mild sharpening late
+    point_prog = df.get("point_no_norm", pd.Series(0.0, index=df.index)).to_numpy().astype(float)
+    set_prog = df.get("set_no_norm", pd.Series(0.0, index=df.index)).to_numpy().astype(float)
+    progress = np.maximum(point_prog, set_prog)
+    # Overall scale ramps from very gentle (0.5) to moderate (1.0) to avoid early skew
+    progress_scale = np.interp(progress, [0.0, 0.25, 0.7, 1.0], [0.5, 0.7, 0.9, 1.0])
+
+    # Context swings (sets/games) are also damped early, strengthened late
+    sets_scale = np.interp(progress, [0.0, 0.3, 0.7, 1.0], [0.3, 0.5, 0.8, 0.95])
+    games_scale = np.interp(progress, [0.0, 0.3, 0.7, 1.0], [0.2, 0.45, 0.7, 0.85])
+
     # Tiebreak dampening: shrink toward 0.5
     logit = logit * (1.0 - 0.35 * is_tb)
 
     # Sets advantage: meaningful swing (win prob correlates with set lead)
-    logit += 1.2 * sets_diff
+    logit += 1.2 * sets_diff * sets_scale
     # Games advantage: smaller swing
-    logit += 0.35 * games_diff
+    logit += 0.35 * games_diff * games_scale
 
     # Break point: nudge toward receiver
     logit -= 0.8 * is_bp_p1  # P1 break point -> hurts server (P2 serve)
     logit += 0.8 * is_bp_p2  # P2 break point -> hurts server (P1 serve)
 
     # Set point: boost the player on set point (stronger)
-    logit += 1.4 * is_sp_p1
-    logit -= 1.4 * is_sp_p2
+    sp_boost = np.interp(progress, [0.0, 0.5, 1.0], [0.7, 0.9, 1.1])
+    logit += sp_boost * is_sp_p1
+    logit -= sp_boost * is_sp_p2
 
     # Match point: very strong boost
-    logit += 3.0 * is_mp_p1
-    logit -= 3.0 * is_mp_p2
+    mp_boost = np.interp(progress, [0.0, 0.5, 1.0], [1.2, 1.6, 2.0])
+    logit += mp_boost * is_mp_p1
+    logit -= mp_boost * is_mp_p2
+
+    # Apply overall progress scaling last to temper early volatility
+    logit = logit * progress_scale
 
     prior = _safe_sigmoid(logit)
 

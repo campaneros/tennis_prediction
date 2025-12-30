@@ -46,7 +46,7 @@ final_p2_sets = match_points['P2_sets_won'].iloc[-1] + (1 if match_points.iloc[-
 print(f"\nFinal: Djokovic {int(final_p1_sets)}-{int(final_p2_sets)} Federer")
 
 # Load predictions
-pred_file = Path('plots/match_2019-wimbledon-1701_probabilities.csv')
+pred_file = Path('plots/v4/match_2019-wimbledon-1701_probabilities.csv')
 if pred_file.exists():
     df_pred = pd.read_csv(pred_file)
     

@@ -19,12 +19,21 @@ from sklearn.model_selection import train_test_split
 import json
 import os
 
-from .features import (
-    add_additional_features, add_match_labels, 
-    MATCH_COL, SERVER_COL
-)
-from .data_loader import load_points_multiple
-from .config import load_config
+# Try relative import first (when used as module), fall back to absolute
+try:
+    from .features import (
+        add_additional_features, add_match_labels, 
+        MATCH_COL, SERVER_COL
+    )
+    from .data_loader import load_points_multiple
+    from .config import load_config
+except ImportError:
+    from features import (
+        add_additional_features, add_match_labels, 
+        MATCH_COL, SERVER_COL
+    )
+    from data_loader import load_points_multiple
+    from config import load_config
 
 
 def calculate_distance_features(df):

@@ -1,12 +1,21 @@
 import numpy as np
 import pandas as pd
 
-from .data_loader import (
-    MATCH_COL,
-    SERVER_COL,
-    POINT_WINNER_COL,
-    GAME_WINNER_COL,
-)
+# Try relative import first (when used as module), fall back to absolute
+try:
+    from .data_loader import (
+        MATCH_COL,
+        SERVER_COL,
+        POINT_WINNER_COL,
+        GAME_WINNER_COL,
+    )
+except ImportError:
+    from data_loader import (
+        MATCH_COL,
+        SERVER_COL,
+        POINT_WINNER_COL,
+        GAME_WINNER_COL,
+    )
 
 # Canonical order for match-level feature matrices. This ensures training and
 # inference share the exact same column ordering, which is critical when using

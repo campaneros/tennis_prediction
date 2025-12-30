@@ -32,13 +32,19 @@ def _uses_clean_features(model):
         if class_name in ['TennisRulesNet', 'MultiTaskTennisNN']:
             return 'multi_task'
     
-    # Multi-task model always uses new features (23 features)
+    # Multi-task model always uses new features (31 features)
     if hasattr(model, 'model_type') and model.model_type == 'multi_task_nn':
         return 'multi_task'
+    
     # Neural network models have use_clean_features attribute
     if hasattr(model, 'use_clean_features'):
         return model.use_clean_features
-    # XGBoost models always use full features
+    
+    # Check if it's XGBoost by checking for XGBoost-specific methods
+    if hasattr(model, 'get_booster') or hasattr(model, 'n_estimators'):
+        return False  # XGBoost uses full features (36-46)
+    
+    # Default to full features for unknown models
     return False
 
 
@@ -1247,6 +1253,18 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     
     use_clean = _uses_clean_features(model)
     
+    # Debug: log model type and expected features
+    model_class = model.__class__.__name__
+    print(f"[predict] Model type: {model_class}, uses_clean_features={use_clean}")
+    if hasattr(model, 'get_booster'):
+        print(f"[predict] Detected XGBoost model (expects ~36-46 features)")
+    elif use_clean == 'multi_task':
+        print(f"[predict] Detected Multi-task NN model (expects 31 features)")
+    elif use_clean:
+        print(f"[predict] Detected Clean NN model (expects 25 features)")
+    else:
+        print(f"[predict] Using full feature set (36-46 features)")
+    
     # Build features based on point_by_point flag
     if point_by_point:
         print(f"[predict] Building features POINT BY POINT for match {match_id_str} (slower, more accurate)...")
@@ -1272,15 +1290,62 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     point_winners = df_valid['PointWinner'].values if 'PointWinner' in df_valid.columns else None
     point_importances = df_valid['point_importance'].values if 'point_importance' in df_valid.columns else np.ones(len(df_valid))
     
-    # For counterfactual, use point-by-point mode only if requested
-    if point_by_point:
+    # For XGBoost models, check if feature dimensions match
+    is_xgboost = hasattr(model, 'get_booster') or hasattr(model, 'n_estimators')
+    
+    if is_xgboost:
+        # Get expected number of features from the model
+        try:
+            if hasattr(model, 'n_features_in_'):
+                expected_features = model.n_features_in_
+            elif hasattr(model, 'get_booster'):
+                # Try to get from booster
+                feature_names = model.get_booster().feature_names
+                expected_features = len(feature_names) if feature_names else None
+            else:
+                expected_features = None
+            
+            if expected_features and X.shape[1] != expected_features:
+                print(f"[predict] WARNING: Feature mismatch for XGBoost model!")
+                print(f"[predict] Model expects {expected_features} features, but got {X.shape[1]}")
+                print(f"[predict] Falling back to --point-by-point mode for accurate predictions")
+                
+                # Use point-by-point reconstruction
+                prob_p1, prob_p2, prob_p1_lose, prob_p2_lose, _ = compute_counterfactual_point_by_point(
+                    df_valid, df_raw_with_labels, model, config_path,
+                    match_id=match_id_str, mode="semi-realistic"
+                )
+            elif point_by_point:
+                # User explicitly requested point-by-point mode
+                print(f"[predict] Using --point-by-point mode for XGBoost (as requested)")
+                prob_p1, prob_p2, prob_p1_lose, prob_p2_lose, _ = compute_counterfactual_point_by_point(
+                    df_valid, df_raw_with_labels, model, config_path,
+                    match_id=match_id_str, mode="semi-realistic"
+                )
+            else:
+                # Feature dimensions match, can use batch prediction
+                print(f"[semi-realistic] XGBoost model: computing current probabilities (batch mode)...")
+                prob_p1 = predict_with_model(model, X)
+                prob_p2 = 1.0 - prob_p1
+                prob_p1_lose = prob_p1.copy()
+                prob_p2_lose = prob_p2.copy()
+                print(f"[semi-realistic] XGBoost prediction complete: mean={prob_p1.mean():.4f}")
+        except Exception as e:
+            print(f"[predict] Error with XGBoost batch prediction: {e}")
+            print(f"[predict] Falling back to point-by-point mode")
+            prob_p1, prob_p2, prob_p1_lose, prob_p2_lose, _ = compute_counterfactual_point_by_point(
+                df_valid, df_raw_with_labels, model, config_path,
+                match_id=match_id_str, mode="semi-realistic"
+            )
+        
+    elif point_by_point:
         # Use the semi-realistic approach which rebuilds point by point for critical points
         prob_p1, prob_p2, prob_p1_lose, prob_p2_lose, _ = compute_counterfactual_point_by_point(
             df_valid, df_raw_with_labels, model, config_path,
             match_id=match_id_str, mode="semi-realistic"
         )
     else:
-        # Use fast importance-based approach
+        # Use fast importance-based approach (only for NN models)
         prob_p1, prob_p2, prob_p1_lose, prob_p2_lose = compute_counterfactual_with_importance(
             X, model, point_importances, X_prev=None, point_winners=point_winners
         )

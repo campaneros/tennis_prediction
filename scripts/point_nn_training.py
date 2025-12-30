@@ -457,6 +457,19 @@ def predict_point_nn(
     rule_prior = compute_rule_prior(features_df)
     prob_raw = (1.0 - rule_blend) * prob_raw_model + rule_blend * rule_prior
 
+    # Flatten early-match volatility (first 10% of points): pull toward 0.5
+    point_prog = features_df.get("point_no_norm", pd.Series(0.0, index=df.index)).to_numpy().astype(float)
+    early_scale = np.interp(point_prog, [0.0, 0.05, 0.1, 1.0], [0.2, 0.35, 0.6, 1.0])
+    prob_raw = 0.5 + (prob_raw - 0.5) * early_scale
+
+    # Reduce spikes immediately after set transitions (first 6 points of each new set)
+    set_no = features_df.get("set_no_pre", pd.Series(1.0, index=df.index)).to_numpy()
+    set_change_idx = np.where(np.diff(np.r_[set_no[0], set_no]) > 0)[0]
+    damp_mask = np.zeros_like(prob_raw, dtype=bool)
+    for idx in set_change_idx:
+        damp_mask[idx : idx + 6] = True
+    prob_raw[damp_mask] = 0.5 + (prob_raw[damp_mask] - 0.5) * 0.5
+
     # Hard clamps in critical states to enforce tennis logic
     if "match_point_p1" in features_df.columns:
         mp1 = features_df["match_point_p1"].to_numpy() > 0
@@ -478,6 +491,19 @@ def predict_point_nn(
             .transform(lambda x: x.rolling(smooth_window, min_periods=1).mean())
             .to_numpy()
         )
+
+        # Preserve critical points after smoothing so match/set points stay extreme
+        if "match_point_p1" in features_df.columns:
+            mp1 = features_df["match_point_p1"].to_numpy() > 0
+            mp2 = features_df["match_point_p2"].to_numpy() > 0
+            # P1 match point -> push up toward 0.85; P2 match point -> push down toward 0.15
+            prob_smooth[mp1] = np.maximum(prob_smooth[mp1], 0.85)
+            prob_smooth[mp2] = np.minimum(prob_smooth[mp2], 0.15)
+        if "set_point_p1" in features_df.columns:
+            sp1 = features_df["set_point_p1"].to_numpy() > 0
+            sp2 = features_df["set_point_p2"].to_numpy() > 0
+            prob_smooth[sp1] = np.clip(prob_smooth[sp1], 0.25, 0.7)
+            prob_smooth[sp2] = np.clip(prob_smooth[sp2], 0.3, 0.75)
 
     # Align output to the filtered feature dataframe (drop rows with missing server/winner)
     out_df = features_df.copy()

@@ -1,0 +1,20 @@
+================================================================================
+TRAINING MODEL V5 - DIRECT ON REAL DATA (NO PRE-TRAINING)
+================================================================================
+
+Fixes applied:
+  ✓ Temperature: 3.0
+  ✓ Match point penalty: 0.5
+  ✓ Set point penalty: 0.3
+  ✓ Weight decay: 0.01
+  ✓ Gradient clipping: 1.0
+  ✓ NO pre-training (avoids synthetic data bias)
+================================================================================
+
+[1/4] Loading real match data...
+  Found 48 files for training
+  (Excluded 2019 Wimbledon for testing)
+Traceback (most recent call last):
+  File "/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/train_v5_no_pretrain.py", line 39, in <module>
+    df_raw = load_points_multiple(train_files, gender='male')
+TypeError: load_points_multiple() got an unexpected keyword argument 'gender'

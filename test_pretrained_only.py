@@ -78,14 +78,39 @@ prob_cal = p_temp / (p_temp + one_minus_p_temp + eps)
 print(f"\nTemperature-calibrated (T={temp}):")
 print(f"  Min: {prob_cal.min():.4f}, Max: {prob_cal.max():.4f}, Mean: {prob_cal.mean():.4f}")
 
+# Dynamic calibration: flatten early sets, sharpen endgame (especially match/set points)
+set_numbers = df['SetNo'].to_numpy()
+max_set = set_numbers.max()
+# Progress from 0 (start match) to 1 (end match)
+match_progress = np.linspace(0, 1, len(prob_cal))
+set_progress = (set_numbers - 1) / max(max_set - 1, 1)
+progress = np.maximum(match_progress, set_progress)
+
+logits = np.log(prob_cal / (1 - prob_cal + eps))
+
+# Start flatter (0.75×), finish sharper (1.3×); interpolate in between
+phase_factor = np.interp(progress, [0.0, 0.25, 0.65, 1.0], [0.75, 0.9, 1.15, 1.3])
+
+is_set_point = (df.get('is_set_point', 0).to_numpy().astype(float) > 0.5)
+clutch_factor = 1.0 + 0.45 * match_points + 0.2 * is_set_point
+
+adj_logits = logits * phase_factor * clutch_factor
+prob_final = 1 / (1 + np.exp(-adj_logits))
+
+print(f"\nDynamic-calibrated (early flattened, clutch boosted):")
+print(f"  Min: {prob_final.min():.4f}, Max: {prob_final.max():.4f}, Mean: {prob_final.mean():.4f}")
+
 if match_points.sum() > 0:
-    mp_probs = prob_cal[match_points]
-    print(f"\nMatch points (n={match_points.sum()}):")
-    print(f"  Min: {mp_probs.min():.4f}, Max: {mp_probs.max():.4f}, Mean: {mp_probs.mean():.4f}")
+    mp_probs = prob_final[match_points]
+    print(f"  Match points (n={match_points.sum()}): min {mp_probs.min():.4f}, max {mp_probs.max():.4f}, mean {mp_probs.mean():.4f}")
+if is_set_point.sum() > 0:
+    sp_probs = prob_final[is_set_point]
+    print(f"  Set points   (n={is_set_point.sum()}): min {sp_probs.min():.4f}, max {sp_probs.max():.4f}, mean {sp_probs.mean():.4f}")
 
 print("\n" + "="*80)
 print("COMPARISON WITH OLD MODEL (T=12.0):")
 print("="*80)
 print(f"Old model (T=12.0): range [0.21, 0.79]")
 print(f"New model (T=3.0):  range [{prob_cal.min():.2f}, {prob_cal.max():.2f}]")
-print(f"\nImprovement: {(prob_cal.max() - prob_cal.min()) / (0.79 - 0.21) * 100:.1f}% wider range")
+print(f"Dynamic model:      range [{prob_final.min():.2f}, {prob_final.max():.2f}]")
+print(f"\nImprovement: {(prob_final.max() - prob_final.min()) / (0.79 - 0.21) * 100:.1f}% wider range")

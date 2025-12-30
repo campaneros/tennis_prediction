@@ -1,0 +1,74 @@
+/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/data_loader.py:27: DtypeWarning: Columns (14) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(path)
+================================================================================
+FINE-TUNING MODEL V5
+Using balanced pre-trained model
+================================================================================
+
+Found 48 files for training
+(Excluded 2019 Wimbledon for testing)
+
+Starting fine-tuning...
+================================================================================
+PHASE 2: FINE-TUNING ON REAL MATCH DATA
+================================================================================
+
+[1/5] Loading pre-trained model...
+Loading pre-trained model from models/tennis_rules_pretrained_v5.pth...
+  Warning: CUDA not available, using CPU
+  ✓ Loaded pre-trained model (trained on unknown synthetic matches)
+  ✓ Architecture: [128, 64]
+  ✓ Temperature: 3.0
+
+[2/5] Loading real match data...
+[load_points_single] Removed 346 metadata rows from data/2017-usopen-points.csv
+[load_points_single] Removed 356 metadata rows from data/2018-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2018-wimbledon-points.csv
+[load_points_single] Removed 502 metadata rows from data/2019-usopen-points.csv
+[load_points_single] Removed 496 metadata rows from data/2020-usopen-points.csv
+[load_points_single] Removed 508 metadata rows from data/2021-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2021-wimbledon-points.csv
+[load_points_single] Removed 664 metadata rows from data/2022-usopen-points.csv
+[load_points_single] Removed 513 metadata rows from data/2022-wimbledon-points.csv
+[load_points_single] Removed 506 metadata rows from data/2023-usopen-points.csv
+[load_points_single] Removed 512 metadata rows from data/2023-wimbledon-points.csv
+[load_points_single] Removed 506 metadata rows from data/2024-usopen-points.csv
+[load_points_single] Removed 511 metadata rows from data/2024-wimbledon-points.csv
+  Gender filter: male
+  Total points loaded: 1122876
+  Matches: 5036
+
+[3/5] Computing features from real data...
+  Features shape: (1122876, 31)
+  Matches: 5036
+  Match label distribution: 0.412
+  Train: 892962 points from 4028 matches
+  Val: 229914 points from 1008 matches
+  Using device: cpu
+
+[4/5] Fine-tuning for 30 epochs...
+  Epoch 1/30 - Train Loss: 1.2201, Val Loss: 1.2002
+  Epoch 5/30 - Train Loss: 0.9727, Val Loss: 1.1377
+  Early stopping at epoch 8 (no improvement for 5 epochs)
+
+[5/5] Saving fine-tuned model...
+
+================================================================================
+Fine-tuning summary:
+  - Pre-trained on: unknown synthetic matches
+  - Fine-tuned on: 4028 real matches (892962 points)
+  - Best validation loss: 1.1179
+  - Model saved to: models/complete_model_v5.pth
+================================================================================
+
+
+================================================================================
+COMPLETE!
+================================================================================
+Model saved to: models/complete_model_v5.pth
+
+To test:
+  python tennisctl.py predict --model ./models/complete_model_v5.pth \
+    --match-id 2019-wimbledon-1701 \
+    --files data/2019-wimbledon-points.csv \
+    --plot-dir plots/v5 --point-by-point

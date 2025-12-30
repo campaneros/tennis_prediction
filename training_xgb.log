@@ -1,0 +1,44 @@
+/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/data_loader.py:27: DtypeWarning: Columns (14) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(path)
+================================================================================
+XGBoost Tennis Match Prediction - Training
+================================================================================
+Input files: 12 CSV files
+  - data/2017-ausopen-points.csv
+  - data/2017-frenchopen-points.csv
+  - data/2017-usopen-points.csv
+  - data/2017-wimbledon-points.csv
+  - data/2018-ausopen-points.csv
+  ... and 7 more
+Output model: models/xgboost_46feat.json
+Gender filter: male
+Config: default (configs/config.json)
+================================================================================
+
+Starting training...
+[load_points_single] Removed 346 metadata rows from data/2017-usopen-points.csv
+[load_points_single] Removed 356 metadata rows from data/2018-usopen-points.csv
+[load_points_single] Removed 521 metadata rows from data/2018-wimbledon-points.csv
+[load_points_single] Removed 502 metadata rows from data/2019-usopen-points.csv
+[load_points_single] Removed 508 metadata rows from data/2019-wimbledon-points.csv
+[train] Gender filter: male
+[train] Filtered 206779 points:
+[train]   - Excluded women's matches (>=2000): 204048
+[train]   - Match 1701 (test set): 2731
+[train] Training on 315871 points from men's matches (best-of-5)
+[train] dataset shape: (314464, 46) positives (P1 wins): 102640
+[train] long_window=20, short_window=5, alpha=0.35
+[train] weight exponent: 0.5
+[train] sample weights - mean: 2.37, max: 10.58
+[train] Test accuracy: 0.910
+[train] Test ROC AUC:  0.976
+[train] Model saved to: models/xgboost_46feat.json
+
+================================================================================
+✓ Training completed successfully!
+✓ Model saved to: models/xgboost_46feat.json
+================================================================================
+
+To use this model for predictions:
+  python tennisctl.py predict --model models/xgboost_46feat.json --match-file <match_file.csv>
+

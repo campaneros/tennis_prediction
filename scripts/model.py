@@ -13,32 +13,56 @@ from .features import (
     add_rolling_serve_return_features,
     add_leverage_and_momentum,
     add_additional_features,
+    add_break_hold_features,
     build_dataset,
 )
 from .config import load_config
 
 def _default_model():
     # Regressor with logistic link so we can train on soft labels directly.
+    # Conservative parameters to reduce overfitting and extreme predictions
     return XGBRegressor(
-        n_estimators=400,
-        max_depth=4,
-        learning_rate=0.05,
+        n_estimators=200,  # Reduced from 400 to prevent overfitting
+        max_depth=3,       # Reduced from 4 for smoother predictions
+        learning_rate=0.1, # Increased from 0.05 for faster convergence with fewer trees
         subsample=0.8,
-        colsample_bytree=0.8,
+        colsample_bytree=0.7,  # Reduced from 0.8 to add more regularization
         objective="reg:logistic",
         eval_metric="logloss",
         tree_method="hist",
         n_jobs=-1,
         random_state=42,
+        reg_alpha=0.1,     # L1 regularization to reduce overfitting
+        reg_lambda=1.0,    # L2 regularization for smoother predictions
     )
 
 
-def _predict_proba_model(model, X_batch):
-    """Return P1 win probability for either classifier or regressor."""
+def _predict_proba_model(model, X_batch, temperature=3.0):
+    """
+    Return P1 win probability for either classifier or regressor.
+    Apply temperature scaling to XGBoost predictions to match NN calibration.
+    """
     if hasattr(model, "predict_proba"):
-        return model.predict_proba(X_batch)[:, 1]
-    preds = model.predict(X_batch)
-    return np.clip(preds, 0.0, 1.0)
+        probs = model.predict_proba(X_batch)[:, 1]
+    else:
+        probs = model.predict(X_batch)
+        probs = np.clip(probs, 0.0, 1.0)
+    
+    # Apply temperature scaling to XGBoost models only
+    is_xgboost = hasattr(model, 'get_booster') or hasattr(model, 'n_estimators')
+    if is_xgboost and temperature != 1.0:
+        # Convert probabilities back to logits: logit = log(p/(1-p))
+        eps = 1e-7
+        probs_clipped = np.clip(probs, eps, 1.0 - eps)
+        logits = np.log(probs_clipped / (1.0 - probs_clipped))
+        
+        # Scale logits by temperature (higher T = less confident = closer to 0.5)
+        scaled_logits = logits / temperature
+        
+        # Convert back to probabilities
+        probs = 1.0 / (1.0 + np.exp(-scaled_logits))
+    
+    return probs
 
 
 def train_model(file_paths, model_out, config_path=None, gender="male"):
@@ -121,6 +145,7 @@ def train_model(file_paths, model_out, config_path=None, gender="male"):
     df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
     df = add_additional_features(df)
     df = add_leverage_and_momentum(df, alpha=alpha)
+    df = add_break_hold_features(df)  # Add break/hold features for consistency with prediction
 
     X, y_soft, _, sample_weights, y_hard = build_dataset(df)
     y_hard = y_hard.astype(int)
@@ -146,7 +171,7 @@ def train_model(file_paths, model_out, config_path=None, gender="male"):
     model = _default_model()
     model.fit(X_train, y_train_soft, sample_weight=w_train)
 
-    y_proba = _predict_proba_model(model, X_test)
+    y_proba = _predict_proba_model(model, X_test, temperature=3.0)
     y_pred = (y_proba >= 0.5).astype(int)
 
     acc = accuracy_score(y_test_hard, y_pred)
@@ -254,5 +279,5 @@ def predict_with_model(model, X):
         from .model_nn import predict_nn
         return predict_nn(model, X)
     else:
-        # XGBoost model
-        return _predict_proba_model(model, X)
+        # XGBoost model with temperature scaling
+        return _predict_proba_model(model, X, temperature=3.0)
