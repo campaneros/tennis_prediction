@@ -37,10 +37,11 @@ def _default_model():
     )
 
 
-def _predict_proba_model(model, X_batch, temperature=3.0):
+def _predict_proba_model(model, X_batch, temperature=5.0):
     """
     Return P1 win probability for either classifier or regressor.
     Apply temperature scaling to XGBoost predictions to match NN calibration.
+    Default T=5.0 for XGBoost to smooth predictions more aggressively.
     """
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(X_batch)[:, 1]
