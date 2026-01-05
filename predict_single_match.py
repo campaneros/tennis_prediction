@@ -115,9 +115,11 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
     
     # Merge LSTM probabilities se fornite E se il modello le supporta
     # Include LSTM se: n_features is None, oppure n_features in [47, 51]
-    include_lstm = lstm_probs_df is not None and (n_features is None or n_features in [47, 51])
+    # Se il modello si aspetta 51 feature MA non abbiamo LSTM, usiamo 0.5 di default
+    include_lstm = n_features is None or n_features in [47, 51]
+    has_lstm_data = lstm_probs_df is not None
     
-    if include_lstm:
+    if include_lstm and has_lstm_data:
         # Converti PointNumber in int per entrambi i dataframe per evitare errori di merge
         # Gestisci il caso speciale '0X' che indica il primo punto
         df['PointNumber'] = df['PointNumber'].replace('0X', '0')
@@ -132,6 +134,9 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         )
         # Riempi valori mancanti con 0.5 (neutro)
         df['p1_point_prob'] = df['p1_point_prob'].fillna(0.5)
+    elif include_lstm and not has_lstm_data:
+        # Modello si aspetta LSTM ma non abbiamo i dati: usa 0.5 di default
+        df['p1_point_prob'] = 0.5
     
     # Riempi i valori NaN con 0 per le colonne numeriche
     numeric_cols = ['P1Momentum', 'P2Momentum', 'P1BreakPoint', 'P2BreakPoint', 
@@ -144,7 +149,9 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
     
     for idx, row in df.iterrows():
         # Feature base: punteggio set
-        p1_sets_won, p2_sets_won = calculate_sets_won(df, idx)
+        # IMPORTANTE: usiamo idx+1 perché vogliamo lo stato DOPO il punto corrente
+        # (P1GamesWon, P2GamesWon, etc. rappresentano lo stato DOPO il punto)
+        p1_sets_won, p2_sets_won = calculate_sets_won(df, idx+1)
         
         # Punteggio game nel set corrente
         p1_games = row['P1GamesWon']
@@ -497,7 +504,7 @@ def predict_match(match_data, model, lstm_probs_df=None):
         # il match è finito
         p1_games = row['P1GamesWon']
         p2_games = row['P2GamesWon']
-        p1_sets, p2_sets = calculate_sets_won(match_data, i)
+        p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
         
         # Situazione 5° set: match finito se qualcuno arriva a 13+ (o vantaggio di 2 su 12+)
         in_fifth = (p1_sets == 2 and p2_sets == 2)
@@ -508,6 +515,85 @@ def predict_match(match_data, model, lstm_probs_df=None):
             else:
                 p1_probs[i] = 0.0
                 p2_probs[i] = 1.0
+    
+    return p1_probs, p2_probs
+
+
+def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interval=50):
+    """
+    Fa predizioni punto per punto in modo CAUSALE: per predire il punto i,
+    usa SOLO le informazioni dei punti da 0 a i-1 (nessuna informazione futura).
+    
+    Questo è il modo corretto di fare predizioni online/real-time.
+    
+    Args:
+        match_data: DataFrame con i dati del match
+        model: Modello addestrato
+        lstm_probs_df: DataFrame con probabilità LSTM (opzionale)
+        progress_interval: Ogni quanti punti stampare il progresso
+    
+    Returns:
+        p1_probs: Array con probabilità di vittoria P1 per ogni punto
+        p2_probs: Array con probabilità di vittoria P2 per ogni punto
+    """
+    n_points = len(match_data)
+    p1_probs = np.zeros(n_points)
+    p2_probs = np.zeros(n_points)
+    
+    # Determina quante feature si aspetta il modello
+    n_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else None
+    
+    print(f"Predizione causale punto per punto: {n_points} punti totali")
+    
+    # Per ogni punto, usa solo i dati fino a quel punto (incluso)
+    for i in range(n_points):
+        # Dataset fino al punto corrente (incluso)
+        history_data = match_data.iloc[:i+1].copy()
+        
+        # Filtra LSTM probs se fornite
+        history_lstm = None
+        if lstm_probs_df is not None:
+            # Prendi solo le righe LSTM fino al punto corrente
+            history_lstm = lstm_probs_df.iloc[:i+1].copy()
+        
+        # Crea features usando solo i dati storici
+        X_history = create_tennis_features(history_data, history_lstm, n_features=n_features)
+        
+        # La predizione per il punto i è l'ultima riga del dataset
+        if len(X_history) > 0:
+            X_current = X_history[-1:, :]  # Ultima riga = punto corrente
+            
+            # Predici
+            prob = model.predict_proba(X_current)
+            p1_probs[i] = prob[0, 1]
+            p2_probs[i] = 1.0 - p1_probs[i]
+        else:
+            # Fallback: 50-50 se non ci sono feature valide
+            p1_probs[i] = 0.5
+            p2_probs[i] = 0.5
+        
+        # Progress
+        if (i + 1) % progress_interval == 0 or i == n_points - 1:
+            print(f"  Processati {i+1}/{n_points} punti...")
+    
+    # Forza probabilità finali quando il match finisce
+    for i in range(n_points):
+        row = match_data.iloc[i]
+        p1_games = row['P1GamesWon']
+        p2_games = row['P2GamesWon']
+        p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
+        
+        in_fifth = (p1_sets == 2 and p2_sets == 2)
+        if in_fifth and (p1_games >= 13 or p2_games >= 13):
+            if p1_games > p2_games:
+                p1_probs[i] = 1.0
+                p2_probs[i] = 0.0
+            else:
+                p1_probs[i] = 0.0
+                p2_probs[i] = 1.0
+    
+    print(f"Predizione causale completata")
+    print(f"  P1 prob: media={p1_probs.mean():.3f}, min={p1_probs.min():.3f}, max={p1_probs.max():.3f}")
     
     return p1_probs, p2_probs
 
@@ -564,7 +650,7 @@ def plot_probabilities_plotly(match_data, p1_probs, p2_probs, output_path):
     p1_sets_list = []
     p2_sets_list = []
     for idx in range(len(match_data)):
-        p1_sets, p2_sets = calculate_sets_won(match_data, idx)
+        p1_sets, p2_sets = calculate_sets_won(match_data, idx+1)
         p1_sets_list.append(p1_sets)
         p2_sets_list.append(p2_sets)
     
@@ -728,7 +814,7 @@ def save_predictions_csv(match_data, p1_probs, p2_probs, output_path):
     p1_sets_list = []
     p2_sets_list = []
     for idx in range(len(match_data)):
-        p1_sets, p2_sets = calculate_sets_won(match_data, idx)
+        p1_sets, p2_sets = calculate_sets_won(match_data, idx+1)
         p1_sets_list.append(p1_sets)
         p2_sets_list.append(p2_sets)
     
@@ -764,6 +850,8 @@ def main():
     parser.add_argument('--output-png', default='match_prediction.png', help='Path output PNG')
     parser.add_argument('--output-html', default='match_prediction.html', help='Path output HTML')
     parser.add_argument('--output-csv', default='match_predictions.csv', help='Path output CSV')
+    parser.add_argument('--causal', action='store_true', 
+                        help='Modalità causale: per ogni punto usa SOLO i dati dei punti precedenti (no informazioni future)')
     
     args = parser.parse_args()
     
@@ -825,8 +913,14 @@ def main():
     match_data = match_data.reset_index(drop=True)
     
     # Fa le predizioni
-    print("\nCalculating predictions...")
-    p1_probs, p2_probs = predict_match(match_data, model, lstm_probs_df)
+    if args.causal:
+        print("\n🔍 Modalità CAUSALE attiva:")
+        print("  Per ogni punto, usa SOLO le informazioni dei punti precedenti")
+        print("  Questa è la modalità corretta per predizioni real-time/online\n")
+        p1_probs, p2_probs = predict_match_causal(match_data, model, lstm_probs_df)
+    else:
+        print("\nCalculating predictions (modalità standard)...")
+        p1_probs, p2_probs = predict_match(match_data, model, lstm_probs_df)
     
     print(f"\nRisultati:")
     print(f"  P1 probabilità iniziale: {p1_probs[0]:.1%}")
