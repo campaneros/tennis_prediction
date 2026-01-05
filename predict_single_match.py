@@ -384,11 +384,11 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         # Ultra feature: match situation dominance
         match_situation_score = 0.0
         
-        # MATCH POINT = 120 (aumentato per probabilità ancora più alta)
+        # MATCH POINT = 150 (aumentato per probabilità molto alta)
         if p1_match_point:
-            match_situation_score += 120
+            match_situation_score += 150
         if p2_match_point:
-            match_situation_score -= 120
+            match_situation_score -= 150
         
         if p1_set_point and p1_can_win_match_this_set:
             match_situation_score += 100
