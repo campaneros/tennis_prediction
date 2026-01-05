@@ -11,15 +11,13 @@ from .features import (
     add_additional_features,
     build_dataset,
 )
-from .model import load_model
+from .model import load_model, _predict_proba_model
 from .plotting import plot_match_probabilities
 
 
 def _predict_p1_proba(model, x_vec):
-    """Return P1 win probability for classifier or regressor models."""
-    if hasattr(model, "predict_proba"):
-        return float(model.predict_proba(x_vec.reshape(1, -1))[:, 1])
-    return float(model.predict(x_vec.reshape(1, -1)))
+    """Return P1 win probability for classifier, regressor, or neural network models."""
+    return float(_predict_proba_model(model, x_vec.reshape(1, -1))[0])
 
 
 def is_critical_point(row, sets_to_win=3):
@@ -522,22 +520,78 @@ def advance_game_state_simple(row_features, point_winner: int, point_importance:
     # Update Game_Diff and Score_Diff using smooth scaling
     # Use importance_factor^2.0 for game/score to suppress normal point changes
     # 0.002^2.0 = 0.000004, 1.5^2.0 = 2.25
-    game_change = np.power(importance_factor, 2.0) * 1.0  # Reduced from 1.5 and squared
+    base_game_change = np.power(importance_factor, 2.0) * 1.0  # Reduced from 1.5 and squared
     score_change = np.power(importance_factor, 2.0) * 1.5  # Reduced from 2.5 and squared
     
     # Apply game differential change based on which player wins
+    # KEY: Break (winning game in return) should count MORE than hold (winning game on serve)
+    # BUT: make weights contextual - in final set, everything matters more equally
+    # Determine if we're in a critical situation (final set, close sets)
+    set_no = int(x[idx["SetNo"]]) if "SetNo" in idx else 1
+    p1_sets = int(x[idx["SetsWonAdvantage"]]) if "SetsWonAdvantage" in idx else 0  # approximation
+    
+    # Context-dependent weights:
+    # Early match (sets 1-3): hold=0.6x, break=2.0x (significant difference)
+    # Late match (set 4+): hold=0.75x, break=1.6x (moderate difference)
+    # Final set (5): hold=0.85x, break=1.3x (both important)
+    if set_no >= 5:
+        # Final set: both hold and break are critical
+        hold_weight = 0.85
+        break_weight = 1.3
+    elif set_no >= 4:
+        # Late match: holds still less important but not negligible
+        hold_weight = 0.75
+        break_weight = 1.6
+    else:
+        # Early match: holds expected, breaks significant
+        hold_weight = 0.6
+        break_weight = 2.0
+    
     # If P1 wins, P1 advantage increases; if P2 wins, P1 advantage decreases
     if point_winner == 1:
+        # P1 wins the point
+        # Check if P1 is serving: if server==1, this is a hold (weight less)
+        # If server==2, this is a break (weight more)
+        if server == 1:
+            # P1 holding serve
+            game_change = base_game_change * hold_weight
+        else:
+            # P1 breaking serve
+            game_change = base_game_change * break_weight
         x[idx["Game_Diff"]] = game_diff + game_change
     else:
+        # P2 wins the point
+        # Check if P2 is serving: if server==2, this is a hold (weight less)
+        # If server==1, this is a break (weight more)
+        if server == 2:
+            # P2 holding serve
+            game_change = base_game_change * hold_weight
+        else:
+            # P2 breaking serve
+            game_change = base_game_change * break_weight
         x[idx["Game_Diff"]] = game_diff - game_change
     x[idx["Game_Diff"]] = np.clip(x[idx["Game_Diff"]], -3.0, 3.0)
     
     # Apply score differential change based on which player wins
+    # Also differentiate based on serve/return context (same weights as game)
     if point_winner == 1:
-        x[idx["Score_Diff"]] = score_diff + score_change
+        # P1 wins the point
+        if server == 1:
+            # P1 holding serve
+            effective_score_change = score_change * hold_weight
+        else:
+            # P1 breaking serve
+            effective_score_change = score_change * break_weight
+        x[idx["Score_Diff"]] = score_diff + effective_score_change
     else:
-        x[idx["Score_Diff"]] = score_diff - score_change
+        # P2 wins the point
+        if server == 2:
+            # P2 holding serve
+            effective_score_change = score_change * hold_weight
+        else:
+            # P2 breaking serve
+            effective_score_change = score_change * break_weight
+        x[idx["Score_Diff"]] = score_diff - effective_score_change
     x[idx["Score_Diff"]] = np.clip(x[idx["Score_Diff"]], -2.0, 2.0)
     
     # Update SrvScr/RcvScr based on who served and who won
@@ -677,9 +731,15 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     if point_no_full_max is not None:
         full_df['PointNumber_full_max'] = point_no_full_max.values
     
-    full_df = add_rolling_serve_return_features(full_df, long_window=long_window, short_window=short_window)
+    # For point-by-point mode, weight serve wins less and return wins more
+    # This prevents over-reaction to normal holds during incremental reconstruction
+    use_weighted = (mode == "semi-realistic")
+    
+    full_df = add_rolling_serve_return_features(full_df, long_window=long_window, short_window=short_window, 
+                                                 weight_serve_return=use_weighted)
     full_df = add_additional_features(full_df)
     full_df = add_leverage_and_momentum(full_df, alpha=alpha)
+    # NON aggiungiamo break features
     
     X_full, _, mask_full, _, _ = build_dataset(full_df)
     print(f"[{mode}] Full dataset built: {len(X_full)} valid points")
@@ -757,10 +817,13 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
             if point_no_full_max is not None:
                 current_df['PointNumber_full_max'] = point_no_full_max.loc[current_df.index].values
             
-            # Rebuild features for this prefix only
-            current_df = add_rolling_serve_return_features(current_df, long_window=long_window, short_window=short_window)
+            # Rebuild features for this prefix only WITH WEIGHTED SERVE/RETURN
+            # This prevents over-reaction to holds during point-by-point reconstruction
+            current_df = add_rolling_serve_return_features(current_df, long_window=long_window, short_window=short_window,
+                                                           weight_serve_return=True)
             current_df = add_additional_features(current_df)
             current_df = add_leverage_and_momentum(current_df, alpha=alpha)
+            # NON aggiungiamo break features
             
             X_curr, _, mask_curr, _, _ = build_dataset(current_df)
             
@@ -836,9 +899,12 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
 
         # Rebuild ALL features from this modified dataset using the counterfactual outcome.
         # This recalculates momentum, serve statistics, etc. based on the new scores/games.
-        cf_df = add_rolling_serve_return_features(cf_df, long_window=long_window, short_window=short_window)
+        # Use weighted serve/return for point-by-point mode to reduce hold over-reaction
+        cf_df = add_rolling_serve_return_features(cf_df, long_window=long_window, short_window=short_window,
+                                                  weight_serve_return=(mode == "semi-realistic"))
         cf_df = add_additional_features(cf_df)
         cf_df = add_leverage_and_momentum(cf_df, alpha=alpha)
+        # NON aggiungiamo break features
 
         # If match did NOT end after flipping, ensure MatchFinished stays 0 so the model
         # does not treat this point as terminal.
@@ -897,10 +963,85 @@ def compute_counterfactual_point_by_point(df_valid, df_raw_with_labels, model, c
     return prob_p1, prob_p2, prob_p1_counterfactual, prob_p2_counterfactual, simulate_mask
 
 
+def compute_probabilities_causal(df_raw, model, config_path=None, match_id=None, progress_interval=50):
+    """
+    Compute match win probabilities point by point in a CAUSAL manner.
+    
+    For each point i:
+    1. Use ONLY data from points 0 to i-1 (no future information)
+    2. Rebuild features using only past points
+    3. Predict probability for point i
+    
+    This is the true "online" prediction mode where the model doesn't see future points.
+    
+    Args:
+        df_raw: Raw DataFrame with point-by-point data
+        model: Trained model
+        config_path: Path to config file
+        match_id: Match ID (for filtering if needed)
+        progress_interval: Print progress every N points
+    
+    Returns:
+        prob_p1: Array of P1 win probabilities (one per point)
+        prob_p2: Array of P2 win probabilities (one per point)
+    """
+    from .features import (
+        add_match_labels,
+        add_rolling_serve_return_features,
+        add_leverage_and_momentum,
+        add_additional_features,
+        build_dataset,
+    )
+    from .config import load_config
+    
+    cfg = load_config(config_path)
+    fcfg = cfg.get("features", {})
+    long_window = int(fcfg.get("long_window", 20))
+    short_window = int(fcfg.get("short_window", 5))
+    alpha = float(fcfg.get("momentum_alpha", 1.2))
+    
+    print(f"[causal] Computing probabilities point by point (causal mode)")
+    print(f"[causal] Total points to process: {len(df_raw)}")
+    
+    prob_p1 = np.zeros(len(df_raw))
+    prob_p2 = np.zeros(len(df_raw))
+    
+    # Process each point causally
+    for i in range(len(df_raw)):
+        # Take only points up to current point (inclusive)
+        df_history = df_raw.iloc[:i+1].copy()
+        
+        # Rebuild features using only historical data
+        df_history = add_match_labels(df_history)
+        df_history = add_rolling_serve_return_features(df_history, long_window=long_window, short_window=short_window)
+        df_history = add_additional_features(df_history)
+        df_history = add_leverage_and_momentum(df_history, alpha=alpha)
+        
+        
+        # Get prediction for the current (last) point
+        if len(X_history) > 0 and mask_history[-1]:
+            # Last point is valid
+            x_current = X_history[-1:, :]
+            p1_prob = _predict_proba_model(model, x_current)[0]
+            prob_p1[i] = p1_prob
+            prob_p2[i] = 1.0 - p1_prob
+        else:
+            # Fallback: uniform probability
+            prob_p1[i] = 0.5
+            prob_p2[i] = 0.5
+        
+        # Progress logging
+        if (i + 1) % progress_interval == 0 or i == len(df_raw) - 1:
+            print(f"[causal] Processed {i+1}/{len(df_raw)} points...")
+    
+    print(f"[causal] Causal computation complete")
+    print(f"[causal] P1 probability: mean={prob_p1.mean():.4f}, min={prob_p1.min():.4f}, max={prob_p1.max():.4f}")
+    
+    return prob_p1, prob_p2
 
 
 def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, config_path: str | None = None, 
-                   counterfactual_mode: str = "importance", gender: str = "male"):
+                   counterfactual_mode: str = "importance", gender: str = "male", causal: bool = False):
     """
     End-to-end prediction + plotting for a given set of files and one match_id.
 
@@ -921,6 +1062,8 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
             - semi-realistic: Dataset modification for critical points only (importance > 3.5)
             - realistic: Dataset modification for ALL points (slow!)
         gender: Filter by gender - "male" (match_id<2000), "female" (match_id>=2000), or "both" (all)
+        point_by_point: If True, rebuild dataset point by point (slower but more accurate).
+                       If False (default), use full match info (faster).
     """
     os.makedirs(plot_dir, exist_ok=True)
     cfg = load_config(config_path)
@@ -966,33 +1109,59 @@ def run_prediction(file_paths, model_path: str, match_id: str, plot_dir: str, co
     # Keep a copy of raw data with labels for counterfactual simulation
     df_raw_with_labels = df.copy()
     
-    # Build features ONCE for this specific match only
-    print(f"[predict] Building features for match {match_id_str}...")
-    df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
-    df = add_additional_features(df)
-    df = add_leverage_and_momentum(df, alpha=alpha)
-
-    X, y, mask, sample_weights, _ = build_dataset(df)
-    df_valid = df[mask].copy()
+    # CAUSAL MODE: compute probabilities point-by-point without seeing future
+    if causal:
+        print(f"\n[CAUSAL MODE] Computing probabilities point-by-point without future information...")
+        prob_p1, prob_p2 = compute_probabilities_causal(
+            df, model_path, config_path, long_window, short_window, alpha
+        )
+        
+        # Build features for plotting and statistics (using full match info for point_importance)
+        df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
+        df = add_additional_features(df)
+        df = add_leverage_and_momentum(df, alpha=alpha)
+        X, y, mask, sample_weights, _ = build_dataset(df)
+        df_valid = df[mask].copy()
+        
+        # Assign causal probabilities
+        df_valid["prob_p1"] = prob_p1[mask]
+        df_valid["prob_p2"] = prob_p2[mask]
+        df_valid["counterfactual_computed"] = False  # No counterfactual in causal mode
+        
+    else:
+        # STANDARD MODE: use full match info (faster)
+        print(f"[predict] Building features using FULL MATCH INFO for match {match_id_str} (faster)...")
+        df = add_rolling_serve_return_features(df, long_window=long_window, short_window=short_window)
+        df = add_additional_features(df)
+        df = add_leverage_and_momentum(df, alpha=alpha)
+        
+        X, y, mask, sample_weights, _ = build_dataset(df)
+        df_valid = df[mask].copy()
     
     print(f"[predict] Dataset built: {len(df_valid)} valid points for match {match_id_str}")
 
-    model = load_model(model_path)
+    # Load model (only if not already loaded in causal mode)
+    if not causal:
+        model = load_model(model_path)
 
-    # ALWAYS compute importance-based counterfactual (fast)
-    print("\n=== COUNTERFACTUAL: Point Importance Scaling ===")
-    point_winners = df_valid['PointWinner'].values if 'PointWinner' in df_valid.columns else None
-    point_importances = df_valid['point_importance'].values if 'point_importance' in df_valid.columns else np.ones(len(df_valid))
-    prob_p1, prob_p2, prob_p1_lose, prob_p2_lose = compute_counterfactual_with_importance(
-        X, model, point_importances, X_prev=None, point_winners=point_winners
-    )
+    # COUNTERFACTUAL ANALYSIS (skip in causal mode)
+    if not causal:
+        # ALWAYS compute importance-based counterfactual (fast)
+        print("\n=== COUNTERFACTUAL: Point Importance Scaling ===")
+        point_winners = df_valid['PointWinner'].values if 'PointWinner' in df_valid.columns else None
+        point_importances = df_valid['point_importance'].values if 'point_importance' in df_valid.columns else np.ones(len(df_valid))
+        
+        # Use fast importance-based approach for counterfactual
+        prob_p1, prob_p2, prob_p1_lose, prob_p2_lose = compute_counterfactual_with_importance(
+            X, model, point_importances, X_prev=None, point_winners=point_winners
+        )
 
-    df_valid["prob_p1"] = prob_p1
-    df_valid["prob_p2"] = prob_p2
-    df_valid["counterfactual_computed"] = True
-    # Counterfactual: probability if the actual point winner had lost that point
-    df_valid["prob_p1_lose_srv"] = prob_p1_lose
-    df_valid["prob_p2_lose_srv"] = prob_p2_lose
+        df_valid["prob_p1"] = prob_p1
+        df_valid["prob_p2"] = prob_p2
+        df_valid["counterfactual_computed"] = True
+        # Counterfactual: probability if the actual point winner had lost that point
+        df_valid["prob_p1_lose_srv"] = prob_p1_lose
+        df_valid["prob_p2_lose_srv"] = prob_p2_lose
 
     # For semi-realistic/realistic modes, we already have only the match data
     match_df = df_valid.copy()

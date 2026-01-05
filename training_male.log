@@ -1,0 +1,100 @@
+============================================================
+Training BDT per Tennis Match Prediction - MALE
+============================================================
+Caricamento e processamento dati da zero (genere: male)...
+Trovati 13 file di punti
+Processando 2011-wimbledon-points.csv...
+Processando 2012-wimbledon-points.csv...
+Processando 2013-wimbledon-points.csv...
+Processando 2014-wimbledon-points.csv...
+Processando 2015-wimbledon-points.csv...
+Processando 2016-wimbledon-points.csv...
+Processando 2017-wimbledon-points.csv...
+Processando 2018-wimbledon-points.csv...
+Processando 2019-wimbledon-points.csv...
+Processando 2021-wimbledon-points.csv...
+Processando 2022-wimbledon-points.csv...
+Processando 2023-wimbledon-points.csv...
+Processando 2024-wimbledon-points.csv...
+
+Dati preparati (male):
+  Totale punti: 337835
+  Features: 40
+  P1 vince: 176239 (52.2%)
+  P2 vince: 161596 (47.8%)
+
+Controllo e pulizia NaN...
+  Trovati 15 valori NaN, sostituisco con 0
+
+Salvataggio dati preprocessati in: data/tennis_features_preprocessed_male.csv
+Dati preprocessati salvati con successo!
+
+============================================================
+Training del modello BDT
+============================================================
+
+Split dei dati:
+  Training set: 272297 punti da 1179 match
+  Test set: 65538 punti da 295 match
+
+Allenamento del modello...
+      Iter       Train Loss      OOB Improve   Remaining Time 
+         1           1.2647           0.1154            1.25m
+         2           1.1704           0.0941            1.24m
+         3           1.0915           0.0776            1.19m
+         4           1.0250           0.0654            1.17m
+         5           0.9691           0.0590            1.15m
+         6           0.9205           0.0496            1.14m
+         7           0.8785           0.0427            1.13m
+         8           0.8417           0.0352            1.12m
+         9           0.8098           0.0333            1.11m
+        10           0.7811           0.0280            1.11m
+        20           0.6222           0.0014            1.07m
+        30           0.5693           0.0076            1.02m
+        40           0.5494          -0.0028           58.96s
+        50           0.5408           0.0055           56.16s
+        60           0.5322          -0.0054           52.98s
+        70           0.5267          -0.0058           49.63s
+        80           0.5233           0.0042           46.13s
+        90           0.5198           0.0024           42.51s
+       100           0.5170          -0.0002           38.79s
+       200           0.4905          -0.0001            0.00s
+
+============================================================
+Valutazione del modello
+============================================================
+
+Training Set:
+  Accuracy: 0.8661
+  AUC: 0.9571
+  Log Loss: 0.2453
+
+Test Set:
+  Accuracy: 0.8212
+  AUC: 0.9457
+  Log Loss: 0.2824
+
+============================================================
+Feature Importance (Top 15)
+============================================================
+ 1. p1_sets_won              : 0.6048
+ 2. set_diff                 : 0.1952
+ 3. p2_sets_won              : 0.0614
+ 4. points_won_diff          : 0.0370
+ 5. p2_points_pct            : 0.0208
+ 6. p1_points_pct            : 0.0194
+ 7. game_diff                : 0.0124
+ 8. p2_points_won            : 0.0107
+ 9. p1_points_won            : 0.0100
+10. p1_momentum              : 0.0080
+11. momentum_diff            : 0.0070
+12. p2_momentum              : 0.0066
+13. p2_games                 : 0.0030
+14. p1_games                 : 0.0027
+15. p2_point_val             : 0.0003
+
+Modello salvato in: models/tennis_bdt_male.pkl
+
+============================================================
+Training completato!
+============================================================

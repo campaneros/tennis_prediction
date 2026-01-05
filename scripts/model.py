@@ -38,7 +38,7 @@ def _predict_proba_model(model, X_batch):
     return np.clip(preds, 0.0, 1.0)
 
 
-def train_model(file_paths, model_out, config_path=None, gender="male"):
+def train_model(file_paths, model_out, config_path=None, gender="male", pretrained_model=None):
     """
     Train the XGBoost model on one or more CSV files and save it to 'model_out'.
 
@@ -50,6 +50,7 @@ def train_model(file_paths, model_out, config_path=None, gender="male"):
         model_out: Path to save the trained model
         config_path: Path to config JSON file
         gender: Filter by gender - "male" (match_id<2000), "female" (match_id>=2000), or "both" (all)
+        pretrained_model: Optional path to pre-trained model for fine-tuning
     """
     if not file_paths:
         raise ValueError("train_model: no input files provided")
@@ -140,8 +141,20 @@ def train_model(file_paths, model_out, config_path=None, gender="male"):
     y_train_hard, y_test_hard = y_hard[idx_train], y_hard[idx_test]
     w_train, w_test = adjusted_weights[idx_train], adjusted_weights[idx_test]
 
-    model = _default_model()
-    model.fit(X_train, y_train_soft, sample_weight=w_train)
+    # Load pre-trained model if provided, otherwise train from scratch
+    if pretrained_model and os.path.exists(pretrained_model):
+        print(f"[train] Loading pre-trained model from {pretrained_model} for fine-tuning...")
+        model = XGBRegressor()
+        model.load_model(pretrained_model)
+        # Continue training with xgb_model parameter
+        print("[train] Fine-tuning on real data...")
+        model.fit(X_train, y_train_soft, sample_weight=w_train, xgb_model=model.get_booster())
+    else:
+        if pretrained_model:
+            print(f"[train] WARNING: Pre-trained model not found: {pretrained_model}")
+            print("[train] Training from scratch...")
+        model = _default_model()
+        model.fit(X_train, y_train_soft, sample_weight=w_train)
 
     y_proba = _predict_proba_model(model, X_test)
     y_pred = (y_proba >= 0.5).astype(int)

@@ -1,0 +1,30 @@
+[predict] Filtered to match 2019-wimbledon-1701: 424 points
+[predict] After gender filter (male): 424 points
+[predict] Building features using FULL MATCH INFO for match 2019-wimbledon-1701 (faster)...
+[build_dataset] Set proximity weights - 1 set: 225, 2 sets: 111, 3+ sets: 88
+[predict] Dataset built: 423 valid points for match 2019-wimbledon-1701
+
+=== COUNTERFACTUAL: Point Importance Scaling ===
+[counterfactual-importance] Mean change: P1=0.0879, P2=0.0879
+[counterfactual-importance] Max change: P1=0.5302, P2=0.5302
+[counterfactual-importance] Points with >10% change: P1=123, P2=123
+[prediction] Saved probabilities to: plots_causal/match_2019-wimbledon-1701_probabilities.csv
+
+=== MATCH 2019-wimbledon-1701 STATISTICS ===
+  Points in match: 423
+  Point importance: mean=3.31, max=7.00
+  Critical points (>3.5): 127
+
+  Importance method:
+    Mean change: 0.0879, Max: 0.5302
+    Points with >10% change: 123/423
+
+  Importance method:
+    Mean change: 0.0879, Max: 0.5302
+    Points with >10% change: 123/423
+
+=== Generating plots (mode=importance) ===
+[plot] Max deviation P1+P2=1 (current): 0.00e+00
+[plot] Max deviation P1+P2=1 (lose):    0.00e+00
+[plot] Saved match probability plot to: plots_causal/match_2019-wimbledon-1701_probabilities.png
+[plot] Saved interactive plot to: plots_causal/match_2019-wimbledon-1701_probabilities.html

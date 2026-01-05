@@ -26,6 +26,8 @@ def main():
                          help="Path to JSON config file (default: config.json)")
     train_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
                          help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
+    train_p.add_argument("--pretrained", default=None,
+                         help="Path to pre-trained model to continue training from (e.g., models/xgb_pretrained.json)")
 
     # TRAIN-POINT (new)
     train_point_p = subparsers.add_parser("train-point", help="Train point-level model (predicts point winner)")
@@ -53,6 +55,8 @@ def main():
                         help="Counterfactual mode: 'importance' (fast, default), 'semi-realistic' (critical points only), 'realistic' (all points, slow)")
     pred_p.add_argument("--gender", choices=["male", "female", "both"], default="male",
                         help="Filter dataset by gender: 'male' (match_id<2000), 'female' (match_id>=2000), 'both' (all matches)")
+    pred_p.add_argument("--causal", action="store_true",
+                        help="Use causal mode: compute probabilities point-by-point without seeing future (slow but accurate)")
 
     # REPLOT
     replot_p = subparsers.add_parser("replot", help="Regenerate plot from saved probabilities CSV")
@@ -79,7 +83,8 @@ def main():
 
     if args.command == "train":
         gender = getattr(args, 'gender', 'male')
-        train_model(args.files, args.model_out, config_path=args.config, gender=gender)
+        pretrained = getattr(args, 'pretrained', None)
+        train_model(args.files, args.model_out, config_path=args.config, gender=gender, pretrained_model=pretrained)
     
     elif args.command == "train-point":
         train_point_model(args.files, args.model_out, config_path=args.config)
@@ -87,8 +92,9 @@ def main():
     elif args.command == "predict":
         mode = getattr(args, 'mode', 'importance')
         gender = getattr(args, 'gender', 'male')
+        causal = getattr(args, 'causal', False)
         run_prediction(args.files, args.model, args.match_id, args.plot_dir, 
-                      config_path=args.config, counterfactual_mode=mode, gender=gender)
+                      config_path=args.config, counterfactual_mode=mode, gender=gender, causal=causal)
 
     elif args.command == "replot":
         # Regenerate plot from saved CSV
