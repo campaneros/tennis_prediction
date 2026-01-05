@@ -1,0 +1,17 @@
+/home/campaneros/Documenti/Tesi_Mik/tennis_prediction/scripts/data_loader.py:26: DtypeWarning: Columns (14) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(path)
+[train] Gender filter: male
+[train] Filtered 141358 points:
+[train]   - Excluded women's matches (>=2000): 139402
+[train]   - Match 1701 (test set): 1956
+[train] Training on 220629 points from men's matches (best-of-5)
+[build_dataset] Set proximity weights - 1 set: 50595, 2 sets: 82125, 3+ sets: 87909
+[train] dataset shape: (219665, 31) positives (P1 wins): 56745
+[train] long_window=20, short_window=5, alpha=0.35
+[train] weight exponent: 0.5
+[train] sample weights - mean: 2.15, max: 10.58
+[train] Loading pre-trained model from models/xgb_pretrained.json for fine-tuning...
+[train] Fine-tuning on real data...
+[train] Test accuracy: 0.933
+[train] Test ROC AUC:  0.971
+[train] Model saved to: models/xgb_finetuned.json

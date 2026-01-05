@@ -1,0 +1,30 @@
+Using 28 files from 2011-2017 for pre-training
+================================================================================
+XGBoost Pre-training on Real Tennis Data
+================================================================================
+Data files: 28 files
+Output model: models/xgb_pretrained.json
+n_estimators: 400, max_depth: 4
+================================================================================
+
+[pretrain] Loading data...
+[pretrain] Loaded 955322 points from 28 files
+[pretrain] Building features...
+[build_dataset] Set proximity weights - 1 set: 502812, 2 sets: 371358, 3+ sets: 80512
+[pretrain] Dataset shape: (949403, 31), positives: 470502
+[pretrain] P1 win rate: 0.4956
+[pretrain] Sample weights - mean: 1.70, max: 4.12
+[pretrain] Initializing XGBoost model...
+[pretrain] Training XGBoost on real data...
+[pretrain] Saving pre-trained model to models/xgb_pretrained.json...
+
+================================================================================
+✓ Pre-training completed!
+  Training accuracy: 0.7816
+  Training ROC AUC: 0.8742
+  Model saved: models/xgb_pretrained.json
+================================================================================
+
+Next step: Fine-tune on real data:
+  python train_xgboost.py --files data/*points.csv --model-out models/xgb_finetuned.json --pretrained models/xgb_pretrained.json
+
