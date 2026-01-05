@@ -1,0 +1,111 @@
+============================================================
+Training BDT per Tennis Match Prediction - MALE
+============================================================
+Caricamento e processamento dati da zero (genere: male)...
+
+Caricamento probabilità LSTM da: data/lstm_point_probs_male.csv
+  Caricate 335709 probabilità LSTM
+Trovati 13 file di punti
+Processando 2011-wimbledon-points.csv...
+Processando 2012-wimbledon-points.csv...
+Processando 2013-wimbledon-points.csv...
+Processando 2014-wimbledon-points.csv...
+Processando 2015-wimbledon-points.csv...
+Processando 2016-wimbledon-points.csv...
+Processando 2017-wimbledon-points.csv...
+Processando 2018-wimbledon-points.csv...
+Processando 2019-wimbledon-points.csv...
+Processando 2021-wimbledon-points.csv...
+Processando 2022-wimbledon-points.csv...
+Processando 2023-wimbledon-points.csv...
+Processando 2024-wimbledon-points.csv...
+
+Dati preparati (male):
+  Totale punti: 675670
+  Features: 51
+  P1 vince: 337835 (50.0%)
+  P2 vince: 337835 (50.0%)
+
+Controllo e pulizia NaN...
+  Trovati 54 valori NaN, sostituisco con 0
+
+Salvataggio dati preprocessati in: data/tennis_features_preprocessed_male.csv
+Dati preprocessati salvati con successo!
+
+============================================================
+Training del modello BDT
+============================================================
+
+Calcolo sample weights per punti critici...
+  Match points: 3939 (peso 150x)
+  Set points decisivi: 0 (peso 15x)
+  Set points normali: 6773 (peso 7x)
+  Punti normali: 531574 (peso 1x)
+  Peso totale: 1563735 (equivalente a 2.88x dataset)
+
+Split dei dati:
+  Training set: 542286 punti da 2358 match
+  Test set: 133384 punti da 590 match
+
+Allenamento del modello con sample weights...
+      Iter       Train Loss      OOB Improve   Remaining Time 
+         1           1.3455           0.0407            4.52m
+         2           1.3067           0.0365            4.55m
+         3           1.2705           0.0354            4.61m
+         4           1.2368           0.0359            4.57m
+         5           1.2044           0.0323            4.55m
+         6           1.1736           0.0280            4.61m
+         7           1.1452           0.0315            4.54m
+         8           1.1177           0.0278            4.47m
+         9           1.0918           0.0267            4.44m
+        10           1.0643           0.0154            4.43m
+        20           0.8750           0.0268            4.24m
+        30           0.7495           0.0190            4.08m
+        40           0.6657          -0.0008            3.92m
+        50           0.6112           0.0348            3.73m
+        60           0.5671           0.0016            3.58m
+        70           0.5397          -0.0052            3.43m
+        80           0.5209           0.0063            3.29m
+        90           0.5027           0.0236            3.14m
+       100           0.4947           0.0211            2.98m
+       200           0.4370          -0.0037            1.53m
+       300           0.4244           0.0229            0.00s
+
+============================================================
+Valutazione del modello
+============================================================
+
+Training Set:
+  Accuracy: 0.7409
+  AUC: 0.8302
+  Log Loss: 0.4999
+
+Test Set:
+  Accuracy: 0.7517
+  AUC: 0.8426
+  Log Loss: 0.4884
+
+============================================================
+Feature Importance (Top 15)
+============================================================
+ 1. match_situation_score    : 0.4095
+ 2. set_diff                 : 0.2240
+ 3. game_diff                : 0.0586
+ 4. p1_sets_won              : 0.0555
+ 5. advantage_diff           : 0.0494
+ 6. point_diff               : 0.0484
+ 7. p1_can_win_match_this_set: 0.0457
+ 8. p2_sets_won              : 0.0186
+ 9. p2_advantage_score       : 0.0183
+10. lstm_momentum_centered   : 0.0100
+11. p2_can_win_match_this_set: 0.0091
+12. lstm_momentum_raw        : 0.0091
+13. lstm_point_prob          : 0.0087
+14. match_criticality_score  : 0.0058
+15. p1_advantage_score       : 0.0045
+
+Modello salvato in: models/tennis_bdt_male.pkl
+
+============================================================
+Training completato!
+============================================================
