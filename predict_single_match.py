@@ -384,11 +384,11 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         # Ultra feature: match situation dominance
         match_situation_score = 0.0
         
-        # MATCH POINT = 200
+        # MATCH POINT = 120 (aumentato per probabilità ancora più alta)
         if p1_match_point:
-            match_situation_score += 200
+            match_situation_score += 120
         if p2_match_point:
-            match_situation_score -= 200
+            match_situation_score -= 120
         
         if p1_set_point and p1_can_win_match_this_set:
             match_situation_score += 100
@@ -426,7 +426,7 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         
         # Costruisci il feature vector
         feature_vec = [
-            set_number, p1_sets_won, p2_sets_won, set_diff,
+            set_number, p1_sets_won, p2_sets_won, set_diff / 2.0,  # set_diff scalato
             p1_games, p2_games, game_diff,
             p1_games_to_win_set, p2_games_to_win_set,
             p1_point_val, p2_point_val, point_diff,
@@ -545,23 +545,29 @@ def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interva
     
     print(f"Predizione causale punto per punto: {n_points} punti totali")
     
-    # Per ogni punto, usa solo i dati fino a quel punto (incluso)
+    # Per ogni punto, usa solo i dati PRECEDENTI (causale = no info futura)
     for i in range(n_points):
-        # Dataset fino al punto corrente (incluso)
-        history_data = match_data.iloc[:i+1].copy()
+        # Dataset fino al punto PRECEDENTE (i-1), per predire il punto i
+        # Al punto 0, non abbiamo storia quindi usiamo solo il punto 0 stesso
+        if i == 0:
+            history_data = match_data.iloc[:1].copy()
+        else:
+            history_data = match_data.iloc[:i].copy()  # Da 0 a i-1
         
         # Filtra LSTM probs se fornite
         history_lstm = None
         if lstm_probs_df is not None:
-            # Prendi solo le righe LSTM fino al punto corrente
-            history_lstm = lstm_probs_df.iloc[:i+1].copy()
+            if i == 0:
+                history_lstm = lstm_probs_df.iloc[:1].copy()
+            else:
+                history_lstm = lstm_probs_df.iloc[:i].copy()
         
         # Crea features usando solo i dati storici
         X_history = create_tennis_features(history_data, history_lstm, n_features=n_features)
         
-        # La predizione per il punto i è l'ultima riga del dataset
+        # La predizione per il punto i usa l'ultima riga del dataset storico
         if len(X_history) > 0:
-            X_current = X_history[-1:, :]  # Ultima riga = punto corrente
+            X_current = X_history[-1:, :]  # Ultima riga = stato prima del punto i
             
             # Predici
             prob = model.predict_proba(X_current)
@@ -576,6 +582,19 @@ def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interva
         if (i + 1) % progress_interval == 0 or i == n_points - 1:
             print(f"  Processati {i+1}/{n_points} punti...")
     
+    # Forza probabilità SOLO per il punto finale quando il match è finito
+    for i in range(n_points):
+        row = match_data.iloc[i]
+        p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
+        
+        # Se qualcuno ha vinto il match (3 set), forza probabilità a 1.0
+        if p1_sets >= 3:
+            p1_probs[i] = 1.0
+            p2_probs[i] = 0.0
+        elif p2_sets >= 3:
+            p1_probs[i] = 0.0
+            p2_probs[i] = 1.0
+    
     # Forza probabilità finali quando il match finisce
     for i in range(n_points):
         row = match_data.iloc[i]
@@ -583,8 +602,15 @@ def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interva
         p2_games = row['P2GamesWon']
         p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
         
-        in_fifth = (p1_sets == 2 and p2_sets == 2)
-        if in_fifth and (p1_games >= 13 or p2_games >= 13):
+        # Se qualcuno ha vinto il match (3 set), forza probabilità a 1.0
+        if p1_sets >= 3:
+            p1_probs[i] = 1.0
+            p2_probs[i] = 0.0
+        elif p2_sets >= 3:
+            p1_probs[i] = 0.0
+            p2_probs[i] = 1.0
+        # Nel 5° set, forza quando qualcuno arriva a 13+ games
+        elif (p1_sets == 2 and p2_sets == 2) and (p1_games >= 13 or p2_games >= 13):
             if p1_games > p2_games:
                 p1_probs[i] = 1.0
                 p2_probs[i] = 0.0

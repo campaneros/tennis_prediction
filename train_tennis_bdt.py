@@ -411,11 +411,22 @@ def create_tennis_features(df, lstm_probs_df=None):
         # Questa feature codifica direttamente quanto un giocatore domina la situazione
         match_situation_score = 0.0
         
-        # MATCH POINT = 300 (deve dominare completamente)
+        # MATCH POINT = 120 (aumentato per probabilità ancora più alta)
         if p1_match_point:
-            match_situation_score += 300  # Era 50 → 200 → 300
+            match_situation_score += 120
         if p2_match_point:
-            match_situation_score -= 300
+            match_situation_score -= 120
+        
+        # Set point che può chiudere il match = 10 (ridotto)
+        if p1_set_point and p1_can_win_match_this_set:
+            match_situation_score += 10
+        elif p1_set_point:
+            match_situation_score += 5  # Ridotto ulteriormente
+        
+        if p2_set_point and p2_can_win_match_this_set:
+            match_situation_score -= 10
+        elif p2_set_point:
+            match_situation_score -= 5
         
         # Set point che può chiudere il match = 100
         if p1_set_point and p1_can_win_match_this_set:
@@ -464,7 +475,7 @@ def create_tennis_features(df, lstm_probs_df=None):
             set_number,
             p1_sets_won,
             p2_sets_won,
-            set_diff,
+            set_diff / 2.0,  # Scalato per evitare salti dopo aver vinto un set
             
             # Game score
             p1_games,
@@ -823,23 +834,23 @@ def train_model(X, y, match_ids, feature_names):
     # Crea weight array (default = 1.0)
     sample_weights = np.ones(len(X_train))
     
-    # Match point: peso 250x (questi sono i punti PIÙ importanti)
+    # Match point: peso 50x (aumentato)
     match_point_mask = (X_train[:, match_point_p1_idx] == 1) | (X_train[:, match_point_p2_idx] == 1)
-    sample_weights[match_point_mask] = 250.0
+    sample_weights[match_point_mask] = 50.0
     
-    # Set point nel set decisivo: peso 15x
+    # Set point nel set decisivo: peso 1.5x (dimezzato)
     decisive_set_point_mask = (
         (X_train[:, decisive_set_idx] == 1) & 
         ((X_train[:, set_point_p1_idx] == 1) | (X_train[:, set_point_p2_idx] == 1))
-    ) & ~match_point_mask  # esclude quelli già contati come match point
-    sample_weights[decisive_set_point_mask] = 15.0
+    ) & ~match_point_mask
+    sample_weights[decisive_set_point_mask] = 1.5
     
-    # Set point in set normale: peso 7x
+    # Set point in set normale: peso 1x (nessun peso extra)
     normal_set_point_mask = (
         ((X_train[:, set_point_p1_idx] == 1) | (X_train[:, set_point_p2_idx] == 1)) &
         ~match_point_mask & ~decisive_set_point_mask
     )
-    sample_weights[normal_set_point_mask] = 7.0
+    sample_weights[normal_set_point_mask] = 1.0
     
     # Statistiche sui pesi
     n_match_points = np.sum(match_point_mask)
