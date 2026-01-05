@@ -866,19 +866,19 @@ def train_model(X, y, match_ids, feature_names):
     # Crea e allena il modello GradientBoosting
     print("\nAllenamento del modello con sample weights...")
     model = GradientBoostingClassifier(
-        n_estimators=300,  # Aumentato da 200
-        learning_rate=0.03,  # Ridotto per apprendimento più lento e preciso
-        max_depth=6,  # Aumentato da 4 per catturare interazioni complesse
-        min_samples_split=100,  # Ridotto da 200 per più flessibilità
-        min_samples_leaf=50,  # Ridotto da 100
-        subsample=0.8,  # Aumentato da 0.7
-        max_features=0.7,  # Cambiato da 'sqrt' - usa 70% delle feature
+        n_estimators=300,
+        learning_rate=0.015,  # Ridotto da 0.03 per apprendimento più smooth
+        max_depth=5,  # Ridotto da 6 per evitare overfitting su set points
+        min_samples_split=200,  # Aumentato per split più conservativi
+        min_samples_leaf=100,  # Aumentato per foglie più grandi
+        subsample=0.8,
+        max_features=0.7,
         random_state=42,
         verbose=1
     )
     
     # Usa sample_weight per dare più importanza ai punti critici
-    # Il modello impara che sbagliare un match point costa 50x rispetto a un punto normale
+    # Il modello impara che sbagliare un match point costa 80x rispetto a un punto normale
     model.fit(X_train, y_train, sample_weight=sample_weights)
     
     # Valutazione
