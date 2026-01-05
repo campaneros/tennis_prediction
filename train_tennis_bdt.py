@@ -411,11 +411,11 @@ def create_tennis_features(df, lstm_probs_df=None):
         # Questa feature codifica direttamente quanto un giocatore domina la situazione
         match_situation_score = 0.0
         
-        # MATCH POINT = 200 (deve dominare completamente)
+        # MATCH POINT = 300 (deve dominare completamente)
         if p1_match_point:
-            match_situation_score += 200  # Era 50, ora 200!
+            match_situation_score += 300  # Era 50 → 200 → 300
         if p2_match_point:
-            match_situation_score -= 200
+            match_situation_score -= 300
         
         # Set point che può chiudere il match = 100
         if p1_set_point and p1_can_win_match_this_set:
@@ -823,9 +823,9 @@ def train_model(X, y, match_ids, feature_names):
     # Crea weight array (default = 1.0)
     sample_weights = np.ones(len(X_train))
     
-    # Match point: peso 150x (questi sono i punti PIÙ importanti)
+    # Match point: peso 250x (questi sono i punti PIÙ importanti)
     match_point_mask = (X_train[:, match_point_p1_idx] == 1) | (X_train[:, match_point_p2_idx] == 1)
-    sample_weights[match_point_mask] = 150.0
+    sample_weights[match_point_mask] = 250.0
     
     # Set point nel set decisivo: peso 15x
     decisive_set_point_mask = (
