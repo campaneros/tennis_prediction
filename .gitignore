@@ -17,3 +17,7 @@ venv/
 preds.csv
 tennis_features_preprocessed_male.csv
 *.csv
+
+# Large generated data
+preds.csv
+tennis_features_preprocessed_male.csv
