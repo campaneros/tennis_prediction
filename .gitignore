@@ -13,3 +13,7 @@ venv/
 !scripts/plotting.py
 
 !data/*.csv
+# Large data files
+preds.csv
+tennis_features_preprocessed_male.csv
+*.csv
