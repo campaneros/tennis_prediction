@@ -678,10 +678,12 @@ def plot_probabilities_matplotlib(match_data, p1_probs, p2_probs, output_path):
 def plot_probabilities_plotly(match_data, p1_probs, p2_probs, output_path):
     """
     Crea un plot interattivo con Plotly stile seconda foto con molti dettagli.
+    IMPORTANTE: I punteggi mostrati sono quelli PRIMA che il punto venga giocato,
+    per essere consistenti con le probabilità.
     """
     points = np.arange(len(p1_probs))
     
-    # Calcola i set vinti per ogni punto
+    # Calcola i set vinti per ogni punto (serve per logica match point dopo)
     p1_sets_list = []
     p2_sets_list = []
     for idx in range(len(match_data)):
@@ -689,14 +691,20 @@ def plot_probabilities_plotly(match_data, p1_probs, p2_probs, output_path):
         p1_sets_list.append(p1_sets)
         p2_sets_list.append(p2_sets)
     
-    # Crea hover text
+    # Crea hover text con punteggi PRIMA del punto
     hover_texts = []
-    for idx, row in match_data.iterrows():
-        i = idx if isinstance(idx, int) else list(match_data.index).index(idx)
-        p1_sets = p1_sets_list[i]
-        p2_sets = p2_sets_list[i]
-        score_str = get_score_string(row, p1_sets, p2_sets)
-        hover_text = f"{score_str}<br>P1: {p1_probs[i]:.1%}<br>P2: {p2_probs[i]:.1%}"
+    for idx in range(len(match_data)):
+        if idx == 0:
+            # Primo punto: 0-0 in tutto
+            score_str = "Sets: 0-0 | Games: 0-0 | Points: 0-0"
+        else:
+            # Usa il punteggio del punto precedente (DOPO che è stato giocato)
+            # = punteggio PRIMA del punto corrente
+            prev_row = match_data.iloc[idx-1]
+            p1_sets, p2_sets = calculate_sets_won(match_data, idx)
+            score_str = get_score_string(prev_row, p1_sets, p2_sets)
+        
+        hover_text = f"{score_str}<br>P1: {p1_probs[idx]:.1%}<br>P2: {p2_probs[idx]:.1%}"
         hover_texts.append(hover_text)
     
     # Crea il plot
@@ -844,26 +852,52 @@ def plot_probabilities_plotly(match_data, p1_probs, p2_probs, output_path):
 def save_predictions_csv(match_data, p1_probs, p2_probs, output_path):
     """
     Salva le predizioni in un file CSV.
+    IMPORTANTE: I punteggi salvati sono quelli PRIMA che il punto venga giocato,
+    in modo da essere consistenti con le probabilità predette.
     """
-    # Calcola i set vinti per ogni punto
+    # Calcola i set vinti per ogni punto (PRIMA che il punto venga giocato)
     p1_sets_list = []
     p2_sets_list = []
+    p1_games_list = []
+    p2_games_list = []
+    p1_score_list = []
+    p2_score_list = []
+    set_no_list = []
+    
     for idx in range(len(match_data)):
-        p1_sets, p2_sets = calculate_sets_won(match_data, idx+1)
-        p1_sets_list.append(p1_sets)
-        p2_sets_list.append(p2_sets)
+        if idx == 0:
+            # Primo punto: 0-0 in tutto
+            p1_sets_list.append(0)
+            p2_sets_list.append(0)
+            p1_games_list.append(0)
+            p2_games_list.append(0)
+            p1_score_list.append('0')
+            p2_score_list.append('0')
+            set_no_list.append(1)
+        else:
+            # Usa il punteggio del punto precedente (che è DOPO che è stato giocato)
+            # = punteggio PRIMA del punto corrente
+            prev_row = match_data.iloc[idx-1]
+            p1_sets, p2_sets = calculate_sets_won(match_data, idx)
+            p1_sets_list.append(p1_sets)
+            p2_sets_list.append(p2_sets)
+            p1_games_list.append(prev_row['P1GamesWon'])
+            p2_games_list.append(prev_row['P2GamesWon'])
+            p1_score_list.append(prev_row['P1Score'])
+            p2_score_list.append(prev_row['P2Score'])
+            set_no_list.append(prev_row['SetNo'])
     
     # Crea DataFrame
     results = pd.DataFrame({
         'match_id': match_data['match_id'].values,
         'point_number': range(len(match_data)),
-        'set_no': match_data['SetNo'].values,
+        'set_no': set_no_list,
         'p1_sets_won': p1_sets_list,
         'p2_sets_won': p2_sets_list,
-        'p1_games': match_data['P1GamesWon'].values,
-        'p2_games': match_data['P2GamesWon'].values,
-        'p1_score': match_data['P1Score'].values,
-        'p2_score': match_data['P2Score'].values,
+        'p1_games': p1_games_list,
+        'p2_games': p2_games_list,
+        'p1_score': p1_score_list,
+        'p2_score': p2_score_list,
         'point_winner': match_data['PointWinner'].values,
         'p1_win_prob': p1_probs,
         'p2_win_prob': p2_probs

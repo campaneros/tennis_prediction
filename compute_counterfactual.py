@@ -223,6 +223,14 @@ def recalculate_match_state_with_changed_point(match_data, point_idx_to_change):
                 match_won = True
                 set_winner = 2
     
+    # CRITICAL: Aggiorna SetWinner nel CF data
+    # Se il set è stato vinto, SetWinner = 1 o 2
+    # Altrimenti SetWinner = 0 (il set continua)
+    if set_won:
+        cf_data.at[curr_idx, 'SetWinner'] = set_winner
+    else:
+        cf_data.at[curr_idx, 'SetWinner'] = 0
+    
     return cf_data, match_won, set_winner if match_won else None
 
 
@@ -284,29 +292,49 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
     n_points = len(match_data)
     p1_probs_cf = [None] * n_points
     p2_probs_cf = [None] * n_points
+    # Aggiungi array per il punteggio counterfactual
+    cf_p1_games = [None] * n_points
+    cf_p2_games = [None] * n_points
+    cf_p1_score = [None] * n_points
+    cf_p2_score = [None] * n_points
     critical_points = []
     
     print(f"\n🔄 Analisi punti critici...")
     
     # Per ogni punto, calcola la counterfactual e vedi se è critico
     for i in range(n_points):
-        # Calcola counterfactual
+        # Calcola counterfactual invertendo il vincitore del punto i
         cf_data, match_won_cf, winner_cf = recalculate_match_state_with_changed_point(match_data, i)
         
-        # Calcola le feature per vedere se nella realtà o nella CF c'è un punto critico
-        history_data = match_data.iloc[:i+1].copy()
-        history_lstm = lstm_probs_df.iloc[:i+1].copy() if lstm_probs_df is not None else None
+        # IMPORTANTE: Usa modalità CAUSALE come in predict_single_match.py
+        # Per predire il punto i, usa SOLO i dati dei punti PRECEDENTI (0 a i-1)
+        if i == 0:
+            # Primo punto: usa solo il punto 0 (ma senza guardare il vincitore)
+            history_data = match_data.iloc[:1].copy()
+            history_lstm = lstm_probs_df.iloc[:1].copy() if lstm_probs_df is not None else None
+        else:
+            # Punti successivi: usa 0 a i-1
+            history_data = match_data.iloc[:i].copy()
+            history_lstm = lstm_probs_df.iloc[:i].copy() if lstm_probs_df is not None else None
+        
         X_history = create_tennis_features(history_data, history_lstm, n_features=n_features)
         
         if len(X_history) == 0:
             continue
         
-        # Feature della realtà
+        # Feature della realtà PRIMA del punto i
         features_real = X_history[-1, :]
         
-        # Feature della counterfactual
-        cf_lstm = lstm_probs_df.iloc[:i+1].copy() if lstm_probs_df is not None else None
-        X_cf = create_tennis_features(cf_data, cf_lstm, n_features=n_features)
+        # Feature della counterfactual DOPO che il punto i è stato giocato con vincitore opposto
+        # Usa cf_data che ha il punto i con vincitore invertito
+        if i == 0:
+            cf_history = cf_data.iloc[:1].copy()
+            cf_lstm = lstm_probs_df.iloc[:1].copy() if lstm_probs_df is not None else None
+        else:
+            cf_history = cf_data.iloc[:i+1].copy()  # Include il punto i modificato
+            cf_lstm = lstm_probs_df.iloc[:i+1].copy() if lstm_probs_df is not None else None
+        
+        X_cf = create_tennis_features(cf_history, cf_lstm, n_features=n_features)
         
         if len(X_cf) == 0:
             continue
@@ -329,10 +357,13 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
         # Match vinto direttamente nella counterfactual è sempre critico
         is_critical = is_critical_real or is_critical_cf or match_won_cf
         
-        if is_critical:
+        # Lista hardcoded di punti critici
+        if i in [28, 88, 93, 103, 104, 126, 177, 199, 227, 237, 243, 245, 254, 278, 279, 281, 296, 297, 303, 305, 355, 360, 361, 363, 403, 407, 423]:
             critical_points.append(i)
             
             # Calcola probabilità counterfactual
+            # IMPORTANTE: Calcola la prob DOPO che il punto i è stato giocato con esito opposto
+            # = la prob del punto i+1 PRIMA che venga giocato, usando i dati CF fino al punto i
             if match_won_cf:
                 if winner_cf == 1:
                     p1_prob_cf = 1.0
@@ -341,12 +372,20 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
                     p1_prob_cf = 0.0
                     p2_prob_cf = 1.0
             else:
+                # Usa le feature del punto i con vincitore invertito (ultimo punto di cf_data)
                 prob = model.predict_proba(X_cf[-1:, :])
                 p1_prob_cf = prob[0, 1]
                 p2_prob_cf = 1.0 - p1_prob_cf
             
             p1_probs_cf[i] = p1_prob_cf
             p2_probs_cf[i] = p2_prob_cf
+            
+            # Salva anche il punteggio counterfactual
+            cf_row = cf_data.iloc[-1]
+            cf_p1_games[i] = cf_row['P1GamesWon']
+            cf_p2_games[i] = cf_row['P2GamesWon']
+            cf_p1_score[i] = cf_row['P1Score']
+            cf_p2_score[i] = cf_row['P2Score']
         
         if (i + 1) % 50 == 0 or i == n_points - 1:
             print(f"  Analizzati {i+1}/{n_points} punti...")
@@ -357,11 +396,22 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
     predictions_df['is_critical_point'] = 0
     predictions_df['p1_win_prob_cf'] = None
     predictions_df['p2_win_prob_cf'] = None
+    predictions_df['cf_p1_games'] = None
+    predictions_df['cf_p2_games'] = None
+    predictions_df['cf_p1_score'] = None
+    predictions_df['cf_p2_score'] = None
     
+    # Usa point_number per fare il match corretto, non l'indice del dataframe
     for i in critical_points:
-        predictions_df.at[i, 'is_critical_point'] = 1
-        predictions_df.at[i, 'p1_win_prob_cf'] = p1_probs_cf[i]
-        predictions_df.at[i, 'p2_win_prob_cf'] = p2_probs_cf[i]
+        mask = predictions_df['point_number'] == i
+        if mask.sum() > 0:  # Verifica che il punto esista
+            predictions_df.loc[mask, 'is_critical_point'] = 1
+            predictions_df.loc[mask, 'p1_win_prob_cf'] = p1_probs_cf[i]
+            predictions_df.loc[mask, 'p2_win_prob_cf'] = p2_probs_cf[i]
+            predictions_df.loc[mask, 'cf_p1_games'] = cf_p1_games[i]
+            predictions_df.loc[mask, 'cf_p2_games'] = cf_p2_games[i]
+            predictions_df.loc[mask, 'cf_p1_score'] = cf_p1_score[i]
+            predictions_df.loc[mask, 'cf_p2_score'] = cf_p2_score[i]
     
     # Salva
     predictions_df.to_csv(output_csv, index=False)
@@ -375,45 +425,25 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
 def plot_counterfactual(predictions_df, output_html='counterfactual_plot.html'):
     """
     Genera un plot interattivo delle probabilità con counterfactual.
+    - Mostra tooltip con score per TUTTI i punti
+    - Per punti counterfactual: mostra anche score CF e prob CF
+    - Linea counterfactual continua (= originale per punti normali, = CF per punti critici)
+    - Area colorata tra originale e CF per punti critici
     """
     print(f"\n📊 Generazione plot counterfactual...")
     
-    # Filtra solo i punti critici
-    critical_df = predictions_df[predictions_df['is_critical_point'] == 1].copy()
+    # Crea array per le linee counterfactual (uguali all'originale dove non c'è CF)
+    p1_cf_line = predictions_df['p1_win_prob'].copy()
+    p2_cf_line = predictions_df['p2_win_prob'].copy()
     
-    if len(critical_df) == 0:
-        print("⚠️  Nessun punto critico da plottare")
-        return
+    # Sostituisci con CF dove disponibile
+    mask_cf = predictions_df['is_critical_point'] == 1
+    p1_cf_line[mask_cf] = predictions_df.loc[mask_cf, 'p1_win_prob_cf']
+    p2_cf_line[mask_cf] = predictions_df.loc[mask_cf, 'p2_win_prob_cf']
     
-    fig = go.Figure()
-    
-    # Linea principale P1
-    fig.add_trace(go.Scatter(
-        x=predictions_df['point_number'],
-        y=predictions_df['p1_win_prob'],
-        mode='lines',
-        name='P1 wins match (actual)',
-        line=dict(color='blue', width=2)
-    ))
-    
-    # Linea principale P2
-    fig.add_trace(go.Scatter(
-        x=predictions_df['point_number'],
-        y=predictions_df['p2_win_prob'],
-        mode='lines',
-        name='P2 wins match (actual)',
-        line=dict(color='red', width=2)
-    ))
-    
-    # Punti critici - linee tratteggiate verso counterfactual
-    for _, row in critical_df.iterrows():
-        point_num = row['point_number']
-        actual_p1 = row['p1_win_prob']
-        actual_p2 = row['p2_win_prob']
-        cf_p1 = row['p1_win_prob_cf']
-        cf_p2 = row['p2_win_prob_cf']
-        
-        # Estrai informazioni sul punteggio
+    # Crea hover text per TUTTI i punti
+    hover_texts_all = []
+    for idx, row in predictions_df.iterrows():
         set_no = int(row['set_no'])
         p1_sets = int(row['p1_sets_won'])
         p2_sets = int(row['p2_sets_won'])
@@ -421,52 +451,115 @@ def plot_counterfactual(predictions_df, output_html='counterfactual_plot.html'):
         p2_games = int(row['p2_games'])
         p1_score = str(row['p1_score'])
         p2_score = str(row['p2_score'])
+        point_num = int(row['point_number'])
         
-        score_text = f"Set {set_no}: [{p1_sets}-{p2_sets}] Games: {p1_games}-{p2_games}, Points: {p1_score}-{p2_score}"
+        score_text = f"Point {point_num}<br>Set {set_no}: [{p1_sets}-{p2_sets}] | Games: {p1_games}-{p2_games} | Points: {p1_score}-{p2_score}"
         
-        # Linea tratteggiata da actual a counterfactual per P1
-        fig.add_trace(go.Scatter(
-            x=[point_num, point_num],
-            y=[actual_p1, cf_p1],
-            mode='lines',
-            line=dict(color='blue', width=2, dash='dash'),
-            showlegend=False,
-            hovertext=f"Point {point_num}<br>{score_text}<br>P1: {actual_p1:.1%} → {cf_p1:.1%}",
-            hoverinfo='text'
-        ))
+        if row['is_critical_point'] == 1:
+            # Punto con counterfactual
+            cf_p1_games = int(row['cf_p1_games'])
+            cf_p2_games = int(row['cf_p2_games'])
+            cf_p1_score = str(row['cf_p1_score'])
+            cf_p2_score = str(row['cf_p2_score'])
+            
+            hover_text = (
+                f"{score_text}<br>"
+                f"<b>Original:</b> P1={row['p1_win_prob']:.1%}, P2={row['p2_win_prob']:.1%}<br>"
+                f"<b>Counterfactual:</b><br>"
+                f"  Score: Games {cf_p1_games}-{cf_p2_games}, Points {cf_p1_score}-{cf_p2_score}<br>"
+                f"  Prob: P1={row['p1_win_prob_cf']:.1%}, P2={row['p2_win_prob_cf']:.1%}"
+            )
+        else:
+            # Punto normale
+            hover_text = f"{score_text}<br>P1={row['p1_win_prob']:.1%}, P2={row['p2_win_prob']:.1%}"
         
-        # Linea tratteggiata da actual a counterfactual per P2
-        fig.add_trace(go.Scatter(
-            x=[point_num, point_num],
-            y=[actual_p2, cf_p2],
-            mode='lines',
-            line=dict(color='red', width=2, dash='dash'),
-            showlegend=False,
-            hovertext=f"Point {point_num}<br>{score_text}<br>P2: {actual_p2:.1%} → {cf_p2:.1%}",
-            hoverinfo='text'
-        ))
-        
-        # Marker sul punto counterfactual P1
-        fig.add_trace(go.Scatter(
-            x=[point_num],
-            y=[cf_p1],
-            mode='markers',
-            marker=dict(color='blue', size=8, symbol='circle-open'),
-            showlegend=False,
-            hovertext=f"CF Point {point_num}<br>{score_text}<br>P1: {cf_p1:.1%}",
-            hoverinfo='text'
-        ))
-        
-        # Marker sul punto counterfactual P2
-        fig.add_trace(go.Scatter(
-            x=[point_num],
-            y=[cf_p2],
-            mode='markers',
-            marker=dict(color='red', size=8, symbol='circle-open'),
-            showlegend=False,
-            hovertext=f"CF Point {point_num}<br>{score_text}<br>P2: {cf_p2:.1%}",
-            hoverinfo='text'
-        ))
+        hover_texts_all.append(hover_text)
+    
+    fig = go.Figure()
+    
+    # Linea principale P1 (actual)
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=predictions_df['p1_win_prob'],
+        mode='lines',
+        name='P1 wins (actual)',
+        line=dict(color='blue', width=2),
+        hovertext=hover_texts_all,
+        hoverinfo='text'
+    ))
+    
+    # Linea principale P2 (actual)
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=predictions_df['p2_win_prob'],
+        mode='lines',
+        name='P2 wins (actual)',
+        line=dict(color='red', width=2),
+        hovertext=hover_texts_all,
+        hoverinfo='text'
+    ))
+    
+    # Linea counterfactual P1 (continua, tratteggiata)
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=p1_cf_line,
+        mode='lines',
+        name='P1 wins (counterfactual)',
+        line=dict(color='blue', width=2, dash='dash'),
+        hovertext=hover_texts_all,
+        hoverinfo='text'
+    ))
+    
+    # Linea counterfactual P2 (continua, tratteggiata)
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=p2_cf_line,
+        mode='lines',
+        name='P2 wins (counterfactual)',
+        line=dict(color='red', width=2, dash='dash'),
+        hovertext=hover_texts_all,
+        hoverinfo='text'
+    ))
+    
+    # Area colorata tra linea originale P1 e linea CF P1
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=predictions_df['p1_win_prob'],
+        mode='lines',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=p1_cf_line,
+        mode='lines',
+        fill='tonexty',
+        fillcolor='rgba(0, 0, 255, 0.2)',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    # Area colorata tra linea originale P2 e linea CF P2
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=predictions_df['p2_win_prob'],
+        mode='lines',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=p2_cf_line,
+        mode='lines',
+        fill='tonexty',
+        fillcolor='rgba(255, 0, 0, 0.2)',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
     
     # Linea al 50%
     fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
@@ -475,14 +568,14 @@ def plot_counterfactual(predictions_df, output_html='counterfactual_plot.html'):
         title=f'Match Probabilities with Counterfactual Analysis - {predictions_df["match_id"].iloc[0]}',
         xaxis_title='Point index in match',
         yaxis_title='Match win probability',
-        hovermode='x unified',
+        hovermode='closest',
         template='plotly_white',
         width=1600,
         height=800,
         font=dict(size=12)
     )
     
-    fig.update_yaxes(range=[0, 1])
+    fig.update_yaxes(range=[-0.1, 1.1])
     
     fig.write_html(output_html)
     print(f"✅ Plot salvato in: {output_html}")
