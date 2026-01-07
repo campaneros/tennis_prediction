@@ -457,20 +457,20 @@ def create_tennis_features(df, lstm_probs_df=None):
         # TIE-BREAK: se siamo a 6-6 nei game, ogni punto conta MOLTO
         in_tiebreak = (p1_games == 6 and p2_games == 6)
         if in_tiebreak and match_on_the_line:
-            # Nel tie-break del set decisivo, la differenza punti conta MOLTISSIMO
-            match_situation_score += point_diff * 30  # Ogni punto di differenza = 30
+            # Nel tie-break del set decisivo (5° set), la differenza punti conta MOLTISSIMO
+            match_situation_score += point_diff * 80  # Aumentato da 50 a 80
             # Se sei a 6 punti nel tiebreak, sei vicino a vincere
             if p1_point_val >= 6:
-                match_situation_score += 50
+                match_situation_score += 120  # Aumentato da 80 a 120
             if p2_point_val >= 6:
-                match_situation_score -= 50
+                match_situation_score -= 120
         elif in_tiebreak:
             # Tie-break normale (non decisivo)
-            match_situation_score += point_diff * 15
+            match_situation_score += point_diff * 40  # Aumentato da 25 a 40
             if p1_point_val >= 6:
-                match_situation_score += 25
+                match_situation_score += 60  # Aumentato da 40 a 60
             if p2_point_val >= 6:
-                match_situation_score -= 25
+                match_situation_score -= 60
         
         # Vantaggio nel game score quando il match è vicino
         if match_on_the_line and not in_tiebreak:
@@ -485,17 +485,17 @@ def create_tennis_features(df, lstm_probs_df=None):
             p2_sets_won / 2.0,
             set_diff / 10.0,  # Da -2 a +2 diventa -0.2 a +0.2 (ridotto da /6.0)
             
-            # Game score
-            p1_games,
-            p2_games,
+            # Game score (scalato per ridurre volatilità)
+            p1_games / 10.0,  # 0-13 -> 0.0-1.3
+            p2_games / 10.0,  # 0-13 -> 0.0-1.3
             game_diff / 10.0,  # Scalato per ridurre impatto al cambio set
             p1_games_to_win_set / 6.0,  # Scalato: da 0-6 a 0.0-1.0
             p2_games_to_win_set / 6.0,  # Scalato: da 0-6 a 0.0-1.0
             
-            # Point score
-            p1_point_val,
-            p2_point_val,
-            point_diff,
+            # Point score (scalato per gestire tie-break che arriva a 10+)
+            p1_point_val / 10.0,  # 0-15 -> 0.0-1.5
+            p2_point_val / 10.0,  # 0-15 -> 0.0-1.5
+            point_diff / 10.0,    # -15 a +15 -> -1.5 a +1.5
             p1_points_to_win_game,
             p2_points_to_win_game,
             
