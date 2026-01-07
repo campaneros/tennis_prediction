@@ -4,7 +4,7 @@ venv/
 *plot*
 *__pycache__*
 *egg-info*
-*.csv
+#*.csv
 # But keep JSON files inside configs/
 !configs/*.json
 
