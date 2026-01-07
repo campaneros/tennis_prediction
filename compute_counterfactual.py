@@ -11,6 +11,8 @@ import pickle
 import argparse
 import sys
 from pathlib import Path
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 def calculate_sets_won(df, up_to_point):
@@ -366,6 +368,124 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
     print(f"\n✅ Counterfactual salvata in: {output_csv}")
     print(f"   Punti critici: {len(critical_points)}/{n_points}")
     print("=" * 70)
+    
+    return predictions_df, critical_points
+
+
+def plot_counterfactual(predictions_df, output_html='counterfactual_plot.html'):
+    """
+    Genera un plot interattivo delle probabilità con counterfactual.
+    """
+    print(f"\n📊 Generazione plot counterfactual...")
+    
+    # Filtra solo i punti critici
+    critical_df = predictions_df[predictions_df['is_critical_point'] == 1].copy()
+    
+    if len(critical_df) == 0:
+        print("⚠️  Nessun punto critico da plottare")
+        return
+    
+    fig = go.Figure()
+    
+    # Linea principale P1
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=predictions_df['p1_win_prob'],
+        mode='lines',
+        name='P1 wins match (actual)',
+        line=dict(color='blue', width=2)
+    ))
+    
+    # Linea principale P2
+    fig.add_trace(go.Scatter(
+        x=predictions_df['point_number'],
+        y=predictions_df['p2_win_prob'],
+        mode='lines',
+        name='P2 wins match (actual)',
+        line=dict(color='red', width=2)
+    ))
+    
+    # Punti critici - linee tratteggiate verso counterfactual
+    for _, row in critical_df.iterrows():
+        point_num = row['point_number']
+        actual_p1 = row['p1_win_prob']
+        actual_p2 = row['p2_win_prob']
+        cf_p1 = row['p1_win_prob_cf']
+        cf_p2 = row['p2_win_prob_cf']
+        
+        # Estrai informazioni sul punteggio
+        set_no = int(row['set_no'])
+        p1_sets = int(row['p1_sets_won'])
+        p2_sets = int(row['p2_sets_won'])
+        p1_games = int(row['p1_games'])
+        p2_games = int(row['p2_games'])
+        p1_score = str(row['p1_score'])
+        p2_score = str(row['p2_score'])
+        
+        score_text = f"Set {set_no}: [{p1_sets}-{p2_sets}] Games: {p1_games}-{p2_games}, Points: {p1_score}-{p2_score}"
+        
+        # Linea tratteggiata da actual a counterfactual per P1
+        fig.add_trace(go.Scatter(
+            x=[point_num, point_num],
+            y=[actual_p1, cf_p1],
+            mode='lines',
+            line=dict(color='blue', width=2, dash='dash'),
+            showlegend=False,
+            hovertext=f"Point {point_num}<br>{score_text}<br>P1: {actual_p1:.1%} → {cf_p1:.1%}",
+            hoverinfo='text'
+        ))
+        
+        # Linea tratteggiata da actual a counterfactual per P2
+        fig.add_trace(go.Scatter(
+            x=[point_num, point_num],
+            y=[actual_p2, cf_p2],
+            mode='lines',
+            line=dict(color='red', width=2, dash='dash'),
+            showlegend=False,
+            hovertext=f"Point {point_num}<br>{score_text}<br>P2: {actual_p2:.1%} → {cf_p2:.1%}",
+            hoverinfo='text'
+        ))
+        
+        # Marker sul punto counterfactual P1
+        fig.add_trace(go.Scatter(
+            x=[point_num],
+            y=[cf_p1],
+            mode='markers',
+            marker=dict(color='blue', size=8, symbol='circle-open'),
+            showlegend=False,
+            hovertext=f"CF Point {point_num}<br>{score_text}<br>P1: {cf_p1:.1%}",
+            hoverinfo='text'
+        ))
+        
+        # Marker sul punto counterfactual P2
+        fig.add_trace(go.Scatter(
+            x=[point_num],
+            y=[cf_p2],
+            mode='markers',
+            marker=dict(color='red', size=8, symbol='circle-open'),
+            showlegend=False,
+            hovertext=f"CF Point {point_num}<br>{score_text}<br>P2: {cf_p2:.1%}",
+            hoverinfo='text'
+        ))
+    
+    # Linea al 50%
+    fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    fig.update_layout(
+        title=f'Match Probabilities with Counterfactual Analysis - {predictions_df["match_id"].iloc[0]}',
+        xaxis_title='Point index in match',
+        yaxis_title='Match win probability',
+        hovermode='x unified',
+        template='plotly_white',
+        width=1600,
+        height=800,
+        font=dict(size=12)
+    )
+    
+    fig.update_yaxes(range=[0, 1])
+    
+    fig.write_html(output_html)
+    print(f"✅ Plot salvato in: {output_html}")
 
 
 if __name__ == '__main__':
@@ -380,6 +500,8 @@ if __name__ == '__main__':
                        help='Output CSV with counterfactual probabilities')
     parser.add_argument('--lstm', type=str, default=None,
                        help='Optional LSTM probabilities CSV')
+    parser.add_argument('--plot', type=str, default=None,
+                       help='Generate interactive HTML plot (provide output path)')
     
     args = parser.parse_args()
     
@@ -397,4 +519,8 @@ if __name__ == '__main__':
         sys.exit(1)
     
     # Esegui counterfactual
-    compute_counterfactual(args.predictions, args.points, args.model, args.output, args.lstm)
+    predictions_df, critical_points = compute_counterfactual(args.predictions, args.points, args.model, args.output, args.lstm)
+    
+    # Genera plot se richiesto
+    if args.plot:
+        plot_counterfactual(predictions_df, args.plot)

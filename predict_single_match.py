@@ -414,20 +414,21 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
             if p2_break_point:
                 match_situation_score += 15
         
-        # TIE-BREAK logic
+        # TIE-BREAK logic - peso maggiore per il vantaggio di punti
         in_tiebreak = (p1_games == 6 and p2_games == 6)
         if in_tiebreak and match_on_the_line:
-            match_situation_score += point_diff * 30
+            # 5° set decisivo: peso molto alto al vantaggio
+            match_situation_score += point_diff * 80  # Aumentato da 50 a 80
             if p1_point_val >= 6:
-                match_situation_score += 50
+                match_situation_score += 120  # Aumentato da 80 a 120
             if p2_point_val >= 6:
-                match_situation_score -= 50
+                match_situation_score -= 120
         elif in_tiebreak:
-            match_situation_score += point_diff * 15
+            match_situation_score += point_diff * 40  # Aumentato da 25 a 40
             if p1_point_val >= 6:
-                match_situation_score += 25
+                match_situation_score += 60  # Aumentato da 40 a 60
             if p2_point_val >= 6:
-                match_situation_score -= 25
+                match_situation_score -= 60
         
         if match_on_the_line and not in_tiebreak:
             match_situation_score += game_diff * 8
@@ -435,10 +436,10 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         # Costruisci il feature vector
         feature_vec = [
             set_number, p1_sets_won / 2.0, p2_sets_won / 2.0, set_diff / 10.0,  # Set features scalati ulteriormente
-            p1_games, p2_games, game_diff / 10.0,  # Scalato per ridurre impatto al cambio set
+            p1_games / 10.0, p2_games / 10.0, game_diff / 10.0,  # Games scalati per ridurre volatilità
             p1_games_to_win_set / 6.0, p2_games_to_win_set / 6.0,  # Scalato: 0-6 -> 0.0-1.0
-            p1_point_val, p2_point_val, point_diff,
-            p1_points_to_win_game, p2_points_to_win_game,
+            p1_point_val / 10.0, p2_point_val / 10.0, point_diff / 10.0,  # Scalato per tie-break
+            p1_points_to_win_game / 4.0, p2_points_to_win_game / 4.0,  # Scalato per ridurre oscillazioni
             p1_serving, p2_serving,
             p1_break_point, p2_break_point,
             decisive_set, close_to_winning_p1, close_to_winning_p2,
