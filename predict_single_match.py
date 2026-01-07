@@ -157,6 +157,14 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         p1_games = row['P1GamesWon']
         p2_games = row['P2GamesWon']
         
+        # FIX BUG: Se questo punto chiude un set (SetWinner != 0),
+        # le feature dovranno essere usate per predire il punto SUCCESSIVO
+        # che sarà nel NUOVO set, quindi games deve essere 0-0
+        set_winner = row.get('SetWinner', 0)
+        if set_winner != 0:
+            p1_games = 0
+            p2_games = 0
+        
         # Punteggio point nel game corrente
         p1_point_val, p2_point_val = parse_point_score(row['P1Score'], row['P2Score'])
         
@@ -356,8 +364,8 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         # Power features
         p1_has_match_point_advantage = p1_match_point * 80  # Peso 80x
         p2_has_match_point_advantage = p2_match_point * 80  # Peso 80x
-        p1_has_set_point_advantage = p1_set_point * 25  # Peso 25x
-        p2_has_set_point_advantage = p2_set_point * 25  # Peso 25x
+        p1_has_set_point_advantage = p1_set_point * 5  # Ridotto da 25 a 5
+        p2_has_set_point_advantage = p2_set_point * 5  # Ridotto da 25 a 5
         
         p1_advantage_score = 0
         p2_advantage_score = 0
@@ -367,9 +375,9 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         if p2_match_point:
             p2_advantage_score += 100
         if p1_set_point:
-            p1_advantage_score += 40  # Set point = +40
+            p1_advantage_score += 8  # Ridotto da 40 a 8
         if p2_set_point:
-            p2_advantage_score += 40
+            p2_advantage_score += 8  # Ridotto da 40 a 8
         if p1_break_point:
             p2_advantage_score += 3
         if p2_break_point:
@@ -393,12 +401,12 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         if p1_set_point and p1_can_win_match_this_set:
             match_situation_score += 100
         elif p1_set_point:
-            match_situation_score += 40
+            match_situation_score += 8  # Ridotto da 40
         
         if p2_set_point and p2_can_win_match_this_set:
             match_situation_score -= 100
         elif p2_set_point:
-            match_situation_score -= 40
+            match_situation_score -= 8  # Ridotto da 40
         
         if match_on_the_line:
             if p1_break_point:
@@ -426,9 +434,9 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
         
         # Costruisci il feature vector
         feature_vec = [
-            set_number, p1_sets_won, p2_sets_won, set_diff / 2.0,  # set_diff scalato
-            p1_games, p2_games, game_diff,
-            p1_games_to_win_set, p2_games_to_win_set,
+            set_number, p1_sets_won / 2.0, p2_sets_won / 2.0, set_diff / 10.0,  # Set features scalati ulteriormente
+            p1_games, p2_games, game_diff / 10.0,  # Scalato per ridurre impatto al cambio set
+            p1_games_to_win_set / 6.0, p2_games_to_win_set / 6.0,  # Scalato: 0-6 -> 0.0-1.0
             p1_point_val, p2_point_val, point_diff,
             p1_points_to_win_game, p2_points_to_win_game,
             p1_serving, p2_serving,
