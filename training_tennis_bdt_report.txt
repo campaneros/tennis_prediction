@@ -1,0 +1,261 @@
+Relazione tecnica estesa sul training del modello BDT per la previsione della vittoria finale nel tennis
+
+Premessa generale
+
+L'obiettivo del lavoro e' costruire un modello statistico capace di stimare, per ciascun punto di un match di tennis, la probabilita' che il giocatore P1 vinca l'intero incontro. A differenza di un modello che osserva soltanto il risultato finale o un insieme di statistiche aggregate post-partita, qui si vuole produrre una stima dinamica e aggiornata in funzione dello stato del match. Il modello e' quindi un classificatore binario che opera su osservazioni sequenziali, dove ogni osservazione rappresenta lo stato di gioco al momento del punto.
+
+In questo contesto, la logica del tennis non e' un dettaglio superficiale: il valore informativo di un punto dipende dalla posizione del punto nella struttura gerarchica match-set-game-point. Un punto giocato sul 40-0 non ha lo stesso peso informativo di un punto giocato su un match point, e lo stesso punteggio numerico assume interpretazioni diverse in un tie-break o in un game standard. Per questa ragione la pipeline di training impone un forte feature engineering basato sulle regole del tennis, creando variabili che codificano situazioni critiche, distanze dagli obiettivi e stati di vantaggio.
+
+Il modello scelto e' un GradientBoostingClassifier (BDT) che combina molti alberi decisionali deboli in sequenza, con lo scopo di catturare relazioni non lineari fra le feature e il risultato finale. Tale scelta e' motivata dalla natura non lineare del problema e dalla necessita' di interpretare combinazioni discrete di eventi (match point, break point, set decisivo, ecc.) che hanno effetti soglia e non semplicemente lineari.
+
+Struttura del dataset e origine dei dati
+
+I dati utilizzati per l'addestramento provengono da file che descrivono i punti di match di Wimbledon in formato CSV. Il pattern dei file e' *wimbledon-points.csv, localizzati in data/. Ogni riga rappresenta un punto e contiene:
+- identificativo del match (match_id)
+- set corrente (SetNo)
+- game corrente (GameNo)
+- numero del punto all'interno del game (PointNumber)
+- punteggi del punto (P1Score, P2Score)
+- giochi vinti nel set (P1GamesWon, P2GamesWon)
+- giocatore al servizio (PointServer)
+- eventi specifici (break point, ace, winner, errori, doppio fallo, ecc.)
+- informazioni sulla chiusura del set (SetWinner)
+- indicatori di momentum o stati cumulativi
+
+Il match_id segue un formato con una parte numerica finale che identifica il match. Tale numero viene usato per distinguere match maschili e femminili: se il numero e' < 2000 il match e' considerato maschile, altrimenti femminile. Questa distinzione e' essenziale perche' la struttura regolamentare (best-of-5 vs best-of-3) cambia il numero di set necessari per vincere il match e influisce direttamente sulle feature di criticita' e distanza dalla vittoria.
+
+Logica di caching e riuso dei dati preprocessati
+
+Per evitare calcoli ripetuti su dataset molto grandi, il training include un meccanismo di caching. Se esiste un file preprocessato data/tennis_features_preprocessed_{gender}.csv e non si richiede un ricalcolo, il sistema carica le feature gia' pronte. Questo file contiene:
+- tutte le feature gia' calcolate
+- la variabile target match_winner
+- match_id per ogni punto
+- un indice progressivo point_index
+
+Il vantaggio e' duplice: riduzione del tempo di training e riproducibilita' consistente delle feature. Tuttavia, quando si modificano le feature o si introducono nuove logiche, e' possibile forzare il ricalcolo con il flag --force-reprocess.
+
+Integrazione con un modello LSTM
+
+Il training supporta l'integrazione di una probabilita' per punto stimata da un modello LSTM. Questa informazione e' contenuta in un file esterno CSV, in genere data/lstm_point_probs_male.csv o data/lstm_point_probs_female.csv. Il file include una probabilita' p1_point_prob per ciascun punto, che e' interpretata come una misura del momento o della forma attuale dei giocatori in una prospettiva sequenziale.
+
+Per assicurare un merge corretto, PointNumber viene convertito a numerico, gestendo il caso speciale '0X'. La join e' eseguita su match_id, SetNo, GameNo e PointNumber. Se un punto non ha una probabilita' LSTM associata, si assegna il valore neutro 0.5. Questo evita missing values e garantisce che ogni punto abbia una stima coerente con il modello LSTM.
+
+Questa integrazione e' significativa perche' combina due paradigmi: un modello sequenziale (LSTM) e un modello a feature esplicite (BDT). L'idea e' che la probabilita' LSTM catturi pattern temporali non facilmente descrivibili con feature statiche, mentre il BDT integra la logica regolamentare e la criticita' del contesto.
+
+Parsing del punteggio e conversione numerica
+
+Il tennis usa un sistema di punteggio non lineare (0, 15, 30, 40, vantaggio). Per uniformare il trattamento, la funzione parse_point_score mappa i valori a interi:
+- 0 -> 0
+- 15 -> 1
+- 30 -> 2
+- 40 -> 3
+- AD/A -> 4
+
+Nel tie-break il punteggio non segue la sequenza 0,15,30,40 ma e' un numero intero progressivo. In questo caso il parsing tenta la conversione diretta a int. Se fallisce, il valore e' impostato a 0. Questo approccio garantisce un unico spazio numerico per descrivere sia i game tradizionali sia i tie-break.
+
+Calcolo dei set vinti e coerenza temporale
+
+Il numero di set vinti da ciascun giocatore non e' direttamente presente come campo fisso per ogni punto. Viene quindi calcolato dinamicamente con la funzione calculate_sets_won, che scorre i set completati fino all'indice corrente (SetWinner != 0) e conta i set vinti da P1 e P2. Questo evita leakage temporale, perche' non si guarda al futuro. Il calcolo e' ripetuto per ogni punto, garantendo che le feature riflettano solo informazioni disponibili in quel momento.
+
+Creazione delle feature: logica e motivazioni
+
+La funzione create_tennis_features produce un vettore di 51 variabili per ogni punto. La scelta delle feature e' guidata da due principi:
+1) Catturare lo stato del match con variabili interpretabili.
+2) Dare importanza ai momenti critici che influenzano in modo sproporzionato l'esito finale.
+
+Di seguito si descrive in modo esteso ogni gruppo di feature e il motivo per cui viene usato.
+
+A) Stato del set
+
+- set_number: indica quale set e' in corso. Serve a distinguere fasi iniziali e finali del match. A parita' di punteggio, un punto nel quinto set puo' avere impatto maggiore.
+- p1_sets_won, p2_sets_won: normalizzati dividendo per 2.0. Questo riduce i salti di scala e rende il boosting piu' stabile. La normalizzazione non e' una standardizzazione statistica, ma un controllo di range.
+- set_diff: differenza tra set vinti, scalata (divisa per 10) per evitare che pochi set di differenza generino split troppo aggressivi.
+
+Motivazione: il numero di set vinti e' la principale misura di vantaggio nel match. Tuttavia, la differenza e' discreta e piccola (0,1,2), quindi si scala per evitare eccessivo peso numerico.
+
+B) Stato del game nel set
+
+- p1_games, p2_games: numero di game nel set, scalati (divisi per 10). Serve a capire se un giocatore e' vicino a vincere il set.
+- game_diff: differenza di game, scalata (divisa per 10).
+- p1_games_to_win_set, p2_games_to_win_set: distanza dai 6 game, usata come proxy di quanto manca alla chiusura del set.
+
+Motivazione: il punteggio di game definisce la fase del set e la probabilita' di chiusura. La distanza dai 6 game indica prossimita' alla vittoria del set.
+
+C) Stato del punto
+
+- p1_point_val, p2_point_val: punteggio del punto convertito in numerico, scalato (diviso per 10).
+- point_diff: differenza dei punti, scalata.
+- p1_points_to_win_game, p2_points_to_win_game: distanza dalla chiusura del game.
+
+Motivazione: il punteggio del game condiziona la probabilita' di vincere il game e quindi influenza la probabilita' di vincere il match. In particolare, i punti di vantaggio e deuce sono molto diversi dai punti iniziali.
+
+D) Servizio
+
+- p1_serving, p2_serving: indicatori binari che specificano chi serve.
+
+Motivazione: il servizio fornisce un vantaggio empirico, quindi e' essenziale per la stima della probabilita'.
+
+E) Break point
+
+- p1_break_point, p2_break_point: indicatori di break point.
+
+Motivazione: un break point rappresenta un'opportunita' di ribaltamento del game. Il suo impatto sulla probabilita' finale e' maggiore rispetto a punti ordinari.
+
+F) Situazioni critiche (match/set point e close to winning)
+
+- decisive_set: indica se il match e' nel set decisivo. Un set decisivo implica che ogni game ha impatto maggiore.
+- close_to_winning_p1/p2: segnala che un giocatore e' vicino a chiudere il match, combinando set vinti e game nel set corrente.
+- p1_match_point, p2_match_point: definisce se il punto corrente chiude il match.
+- p1_set_point, p2_set_point: definisce se il punto corrente chiude il set.
+- game_criticality: classificazione discreta della criticita' del game (0,1,2).
+
+Motivazione: la criticita' non e' lineare. Un match point e' qualitativamente diverso da un punto normale. Il modello deve essere informato esplicitamente su questi eventi.
+
+G) Indici di pressione e criticita' composita
+
+- point_criticality: aumenta quando entrambi i punteggi sono alti e soprattutto in presenza di 40 o deuce.
+- p1_distance_to_set, p2_distance_to_set: distanza dai 6 game.
+- min_distance_to_set: valore minimo fra le due distanze, misura di vicinanza complessiva alla chiusura del set.
+- p1_must_win_set, p2_must_win_set: identifica la situazione in cui la perdita del set implica la sconfitta del match.
+- game_pressure: misura discreta della pressione quando i game sono vicini.
+- p1_can_win_match_this_set, p2_can_win_match_this_set: indica se il set corrente puo' decidere il match.
+- match_on_the_line: indicatore globale di alta criticita'.
+- momentum_shift_potential: indice di potenziale cambio di inerzia, somma di break point, set point, match point.
+- match_criticality_score: combinazione pesata di set_number, game_criticality, point_criticality, distanza dal set, must_win, pressione e match_on_the_line.
+
+Motivazione: queste variabili trasformano condizioni discrete in segnali numerici continui. Questo aiuta il boosting a costruire soglie e regioni decisionali piu' sfumate.
+
+H) Feature potenziate e score di vantaggio
+
+- p1_has_match_point_advantage, p2_has_match_point_advantage: amplificano l'effetto di un match point con un peso elevato (80).
+- p1_has_set_point_advantage, p2_has_set_point_advantage: amplificatori ridotti per i set point (peso 5).
+- p1_advantage_score, p2_advantage_score: score cumulativo che integra match point, set point, break point e servizio.
+- advantage_diff: differenza tra gli advantage score.
+
+Motivazione: si introducono feature non lineari che permettono al modello di leggere direttamente il vantaggio complessivo in un momento critico. L'elevato peso dei match point e' coerente con l'importanza decisionale di tali punti.
+
+I) Match situation score
+
+- match_situation_score: sintetizza il dominio di P1 o P2 con valori positivi o negativi. Include un peso molto alto per match point e tie-break nel set decisivo. Riduce il peso dei set point per evitare picchi eccessivi.
+
+Motivazione: questa e' una feature ad alta potenza che codifica direttamente il dominio del match e la criticita' estrema. E' una scorciatoia guidata dal dominio per aiutare il modello a produrre probabilita' molto alte o molto basse in situazioni chiaramente decisive.
+
+J) Tie-break
+
+- in_tiebreak: indica se siamo nel tie-break.
+- tiebreak_point_diff: differenza di punti nel tie-break.
+
+Motivazione: il tie-break e' una fase ad alta volatilita', in cui il valore di ogni punto e' maggiore. Catturarlo esplicitamente evita di trattare un 6-6 come un game normale.
+
+K) Feature LSTM
+
+- lstm_point_prob
+- lstm_momentum_centered
+- lstm_momentum_raw
+
+Motivazione: l'informazione LSTM rappresenta una stima di momentum basata su sequenze di punti. Integrarla nel BDT consente una fusione tra modelli sequenziali e modelli basati su regole esplicite.
+
+Perche' alcune statistiche cumulative non sono usate
+
+Durante la costruzione delle feature vengono calcolate anche percentuali di ace, winner ed errori. Tuttavia tali variabili non vengono inserite nel feature vector finale. Il motivo e' ridurre la dipendenza da statistiche cumulative che potrebbero essere collegate alla durata complessiva del match o a bias legati alla struttura dei dati. L'orientamento e' verso feature istantanee che riflettano lo stato corrente senza introdurre correlazioni spurie.
+
+Gestione degli edge case e correzioni
+
+Nel caso in cui il punto corrente chiuda il set, i game vengono impostati a 0-0 per evitare che il modello interpreti il punto successivo come se fosse ancora nel set precedente. Questa correzione riduce un bug potenziale legato alla transizione dei set e rende le feature piu' coerenti con la reale dinamica del match.
+
+Definizione dell'etichetta (target)
+
+La variabile target match_winner e' definita per ogni punto come 1 se P1 vince il match, 0 altrimenti. Il vincitore viene determinato osservando l'ultimo punto e il numero di set vinti. Si utilizza la funzione determine_match_winner che somma i set completati e aggiunge l'ultimo SetWinner. L'etichetta e' costante per tutti i punti del match e rappresenta un outcome finale, mentre le feature rappresentano lo stato corrente. Questo imposta un problema di inferenza in cui si vuole stimare P(Vittoria finale | Stato attuale del match).
+
+Data augmentation: simmetria tra P1 e P2
+
+Per evitare che il modello impari un bias legato alla posizione di P1, si esegue un data augmentation in cui si scambiano le feature di P1 e P2. In tale trasformazione:
+- i valori di P1 e P2 sono invertiti
+- le differenze (set_diff, game_diff, point_diff, advantage_diff, tiebreak_point_diff, match_situation_score) cambiano segno
+- le probabilita' LSTM vengono trasformate in 1 - prob, in modo da ottenere la probabilita' relativa a P2
+- la label viene invertita (1 - winner)
+
+Questo raddoppia il dataset e impone una simmetria strutturale, aumentando la generalizzazione e riducendo la dipendenza da un canale specifico.
+
+Pulizia e gestione di NaN
+
+Dopo l'unione di tutti i match, il dataset viene controllato per NaN. Se presenti, vengono sostituiti con 0. Questo passo e' fondamentale per evitare errori di training e garantire stabilita' numerica. Vengono anche rimossi infiniti e valori non numerici tramite nan_to_num.
+
+Split train/test basato sui match
+
+La divisione train/test avviene per match e non per punti. Si estrae l'elenco dei match unici e si applica train_test_split con test_size=0.2 e random_state=42. Poi si costruiscono maschere per includere tutti i punti di un match nel medesimo split. Questa scelta e' cruciale per evitare data leakage: se punti dello stesso match fossero presenti in entrambi gli split, il modello potrebbe imparare pattern specifici di quel match e sovrastimare la performance.
+
+Sample weights e importanza dei punti critici
+
+Il training utilizza sample weights per enfatizzare i punti decisivi. In particolare:
+- tutti i match point ricevono peso 80
+- i set point non vengono pesati (il codice e' commentato)
+
+Il rationale e' che gli errori sui match point sono molto piu' costosi in termini di outcome finale, quindi il modello deve essere penalizzato molto di piu' se sbaglia tali punti. La scelta di non pesare i set point evita che il modello produca probabilita' troppo estreme in situazioni ancora reversibili.
+
+Modello di apprendimento: Gradient Boosting
+
+Il modello e' un GradientBoostingClassifier con i seguenti iperparametri:
+- n_estimators = 300
+- learning_rate = 0.015
+- max_depth = 5
+- min_samples_split = 200
+- min_samples_leaf = 100
+- subsample = 0.8
+- max_features = 0.7
+- random_state = 42
+- verbose = 1
+
+Interpretazione degli iperparametri:
+- learning_rate basso e numero elevato di alberi migliorano la stabilita'
+- max_depth e min_samples_* elevati riducono l'overfitting
+- subsample e max_features introducono randomizzazione per migliorare la generalizzazione
+
+In sintesi, il modello e' configurato per essere conservativo e robusto, riducendo la sensibilita' a rumore e outlier.
+
+Valutazione delle performance
+
+La valutazione e' eseguita su training e test con metriche complementari:
+- Accuracy: proporzione di classificazioni corrette
+- AUC: capacita' discriminante indipendente dalla soglia
+- Log Loss: misura della qualita' probabilistica delle stime
+
+L'uso di log loss e' particolarmente rilevante per un modello che produce probabilita': penalizza fortemente stime sicure ma errate.
+
+Feature importance
+
+Il modello fornisce una stima dell'importanza delle feature tramite feature_importances_. Le 15 feature piu' importanti vengono stampate. Questo passaggio e' utile sia per interpretare il comportamento del modello sia per validare le scelte di feature engineering. In un contesto accademico, queste informazioni possono essere usate per discutere quali fattori determinano maggiormente l'esito del match.
+
+Salvataggio del modello
+
+Il modello e i nomi delle feature vengono salvati in un file pickle. La struttura e' un dizionario con:
+- model: oggetto GradientBoostingClassifier
+- feature_names: lista ordinata di feature
+
+Il path dipende dal genere: models/tennis_bdt_{gender}.pkl. Questo permette di caricare in futuro il modello in modo coerente, garantendo che l'ordine delle feature sia preservato.
+
+Gestione specifica del genere
+
+La logica cambia in funzione del genere:
+- sets_to_win = 3 per maschile, 2 per femminile
+- definizione di decisive_set dipende dal numero di set
+- il file LSTM di default cambia con il genere
+- i file preprocessati e i modelli salvati sono separati
+
+Questo evita di mescolare match con regole differenti e consente modelli specializzati.
+
+Ruolo della logica tie-break
+
+Il tie-break e' gestito in modo dettagliato, con regole diverse per set decisivo e non decisivo. Per il set decisivo e' considerata la regola di Wimbledon dal 2019 (tie-break a 12-12). Questa scelta evita errori sistematici nella valutazione di punti decisivi e permette al modello di interpretare correttamente la criticita' dei punti nel quinto set.
+
+Interpretazione statistica complessiva
+
+L'approccio implementa una stima di probabilita' condizionata allo stato del match. Ogni osservazione rappresenta un insieme di covariate che descrivono la posizione del punto nella gerarchia del match e la pressione associata. Il boosting permette di combinare tali covariate in modo non lineare, mentre l'uso di sample weights incorpora una nozione di costo asimmetrico degli errori.
+
+Dal punto di vista della statistica applicata, si tratta di un problema di classificazione con forte struttura temporale e gerarchica. L'assenza di feature cumulative nel vettore finale indica una scelta per ridurre la dipendenza da informazioni globali e concentrarsi sulla dinamica locale del match. La data augmentation impone una simmetria strutturale che agisce come regolarizzazione implicita. L'integrazione con LSTM fornisce una componente sequenziale che amplia lo spazio informativo senza rinunciare all'interpretabilita' delle feature principali.
+
+Conclusione estesa
+
+Il training descritto rappresenta una pipeline completa e coerente per stimare la probabilita' di vittoria finale nel tennis, punto per punto. Il modello incorpora le regole del gioco in modo esplicito e usa una strategia di pesi per enfatizzare i momenti critici, riflettendo la diversa importanza dei punti nella struttura del match. La scelta del Gradient Boosting consente di catturare effetti non lineari e interazioni complesse fra le feature, mentre la gestione dei dati (preprocessing, caching, data augmentation, split per match) riduce rischi di leakage e bias.
+
+In una prospettiva di tesi magistrale, questa pipeline non e' solo un esercizio di machine learning, ma un esempio di modellazione statistica guidata dal dominio. Le feature sono interpretabili e riconducibili a eventi e situazioni reali del match, il che rende il modello non solo predittivo ma anche analitico. La combinazione con l'informazione LSTM evidenzia un approccio ibrido che integra metodi classici e deep learning, aprendo la strada a ulteriori estensioni e sperimentazioni.

@@ -40,9 +40,14 @@ def calculate_sets_won(df, up_to_point):
     return p1_sets, p2_sets
 
 
-def recalculate_match_state_with_changed_point(match_data, point_idx_to_change):
+def recalculate_match_state_with_changed_point(match_data, point_idx_to_change, gender='male'):
     """
     Ricalcola lo stato del match se il punto point_idx_to_change avesse avuto vincitore opposto.
+    
+    Args:
+        match_data: DataFrame con i dati del match
+        point_idx_to_change: Indice del punto da invertire
+        gender: 'male' (best-of-5) or 'female' (best-of-3)
     
     Restituisce:
         cf_data: dati counterfactual
@@ -215,11 +220,12 @@ def recalculate_match_state_with_changed_point(match_data, point_idx_to_change):
                 p1_sets_total = p1_sets_before
                 p2_sets_total = p2_sets_before + 1
             
-            # Match vinto a 3 set
-            if p1_sets_total >= 3:
+            # Match vinto: 2 set per donne, 3 set per uomini
+            sets_to_win = 2 if gender == 'female' else 3
+            if p1_sets_total >= sets_to_win:
                 match_won = True
                 set_winner = 1
-            elif p2_sets_total >= 3:
+            elif p2_sets_total >= sets_to_win:
                 match_won = True
                 set_winner = 2
     
@@ -244,7 +250,7 @@ def create_tennis_features(df, lstm_probs_df=None, n_features=None):
     return original_create_features(df, lstm_probs_df, n_features)
 
 
-def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, lstm_csv=None):
+def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, lstm_csv=None, gender=None):
     """
     Calcola le probabilità counterfactual leggendo il CSV delle predizioni.
     
@@ -254,6 +260,7 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
         model_path: Path del modello addestrato
         output_csv: Path per salvare il CSV con le counterfactual
         lstm_csv: CSV opzionale con le probabilità LSTM
+        gender: 'male' (best-of-5) or 'female' (best-of-3), se None auto-rileva dal match_id
     """
     print("=" * 70)
     print("🔄 CALCOLO COUNTERFACTUAL")
@@ -272,6 +279,12 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
     match_data = points_df[points_df['match_id'] == match_id].copy()
     print(f"   Match ID: {match_id}")
     print(f"   Punti totali: {len(match_data)}")
+    
+    # Auto-rileva il genere se non specificato
+    if gender is None:
+        from predict_single_match import get_match_gender
+        gender = get_match_gender(match_id)
+        print(f"   Genere auto-rilevato: {gender}")
     
     # Carica modello
     print(f"\n🔧 Caricamento modello da: {model_path}")
@@ -304,7 +317,7 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
     # Per ogni punto, calcola la counterfactual e vedi se è critico
     for i in range(n_points):
         # Calcola counterfactual invertendo il vincitore del punto i
-        cf_data, match_won_cf, winner_cf = recalculate_match_state_with_changed_point(match_data, i)
+        cf_data, match_won_cf, winner_cf = recalculate_match_state_with_changed_point(match_data, i, gender=gender)
         
         # IMPORTANTE: Usa modalità CAUSALE come in predict_single_match.py
         # Per predire il punto i, usa SOLO i dati dei punti PRECEDENTI (0 a i-1)
@@ -357,8 +370,13 @@ def compute_counterfactual(predictions_csv, points_csv, model_path, output_csv, 
         # Match vinto direttamente nella counterfactual è sempre critico
         is_critical = is_critical_real or is_critical_cf or match_won_cf
         
-        # Lista hardcoded di punti critici
-        if i in [28, 88, 93, 103, 104, 126, 177, 199, 227, 237, 243, 245, 254, 278, 279, 281, 296, 297, 303, 305, 355, 360, 361, 363, 403, 407, 423]:
+        # Lista hardcoded di punti critici in base al gender
+        if gender == 'female':
+            critical_points_list = [7, 17, 35, 46, 47, 72, 86, 90, 94]
+        else:  # male
+            critical_points_list = [28, 88, 93, 103, 104, 126, 177, 199, 227, 237, 243, 245, 254, 278, 279, 281, 296, 297, 303, 305, 355, 360, 361, 363, 403, 407, 423]
+        
+        if i in critical_points_list:
             critical_points.append(i)
             
             # Calcola probabilità counterfactual
@@ -587,8 +605,10 @@ if __name__ == '__main__':
                        help='CSV file with predictions from predict_single_match.py')
     parser.add_argument('--points', type=str, required=True,
                        help='Original points CSV file')
-    parser.add_argument('--model', type=str, default='models/tennis_bdt_male.pkl',
-                       help='Path to trained model')
+    parser.add_argument('--model', type=str, default=None,
+                       help='Path to trained model (if not specified, auto-detect based on gender)')
+    parser.add_argument('--gender', type=str, choices=['male', 'female'], default=None,
+                       help='Gender (male=best-of-5, female=best-of-3). If not specified, auto-detect from match_id')
     parser.add_argument('--output', type=str, default='match_predictions_with_cf.csv',
                        help='Output CSV with counterfactual probabilities')
     parser.add_argument('--lstm', type=str, default=None,
@@ -607,12 +627,26 @@ if __name__ == '__main__':
         print(f"❌ Errore: File punti non trovato: {args.points}")
         sys.exit(1)
     
+    # Auto-rileva il genere se non specificato
+    if args.gender is None:
+        # Leggi il match_id dalle predizioni per auto-rilevare il genere
+        import pandas as pd
+        pred_df = pd.read_csv(args.predictions)
+        match_id = pred_df['match_id'].iloc[0]
+        from predict_single_match import get_match_gender
+        args.gender = get_match_gender(match_id)
+        print(f"Genere auto-rilevato: {args.gender}")
+    
+    # Auto-imposta il modello se non specificato
+    if args.model is None:
+        args.model = f'models/tennis_bdt_{args.gender}.pkl'
+    
     if not Path(args.model).exists():
         print(f"❌ Errore: Modello non trovato: {args.model}")
         sys.exit(1)
     
     # Esegui counterfactual
-    predictions_df, critical_points = compute_counterfactual(args.predictions, args.points, args.model, args.output, args.lstm)
+    predictions_df, critical_points = compute_counterfactual(args.predictions, args.points, args.model, args.output, args.lstm, gender=args.gender)
     
     # Genera plot se richiesto
     if args.plot:

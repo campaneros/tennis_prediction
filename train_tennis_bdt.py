@@ -111,7 +111,7 @@ def calculate_sets_won(match_data, current_idx):
     return p1_sets, p2_sets
 
 
-def create_tennis_features(df, lstm_probs_df=None):
+def create_tennis_features(df, lstm_probs_df=None, gender='male'):
     """
     Crea feature specifiche per il tennis che catturano lo stato della partita.
     
@@ -128,8 +128,12 @@ def create_tennis_features(df, lstm_probs_df=None):
         df: DataFrame con i dati del match
         lstm_probs_df: DataFrame opzionale con le probabilità LSTM per punto
                       (colonne: match_id, SetNo, GameNo, PointNumber, p1_point_prob)
+        gender: 'male' per best-of-5 (3 set per vincere), 'female' per best-of-3 (2 set per vincere)
     """
     features = []
+    
+    # Determina quanti set servono per vincere
+    sets_to_win = 2 if gender == 'female' else 3
     
     # Merge LSTM probabilities se fornite
     if lstm_probs_df is not None:
@@ -238,17 +242,17 @@ def create_tennis_features(df, lstm_probs_df=None):
         p2_unforced_pct = p2_unforced / total_unforced
         
         # Feature combinate: situazione critica
-        # Set decisivo (2-2 nei set)
-        decisive_set = 1 if p1_sets_won == 2 and p2_sets_won == 2 else 0
+        # Set decisivo (es. 2-2 nei set per best-of-5, 1-1 per best-of-3)
+        decisive_set = 1 if p1_sets_won == (sets_to_win - 1) and p2_sets_won == (sets_to_win - 1) else 0
         
         # Game vicino alla vittoria
-        close_to_winning_p1 = 1 if (p1_sets_won == 2 and p2_sets_won < 2 and p1_games >= 5) else 0
-        close_to_winning_p2 = 1 if (p2_sets_won == 2 and p1_sets_won < 2 and p2_games >= 5) else 0
+        close_to_winning_p1 = 1 if (p1_sets_won == (sets_to_win - 1) and p2_sets_won < (sets_to_win - 1) and p1_games >= 5) else 0
+        close_to_winning_p2 = 1 if (p2_sets_won == (sets_to_win - 1) and p1_sets_won < (sets_to_win - 1) and p2_games >= 5) else 0
         
         # FEATURE CHIAVE: Distanza dalla vittoria finale
-        # Per vincere serve vincere 3 set. Calcola quanti set servono ancora
-        p1_sets_to_win_match = max(0, 3 - p1_sets_won)
-        p2_sets_to_win_match = max(0, 3 - p2_sets_won)
+        # Per vincere serve vincere sets_to_win set. Calcola quanti set servono ancora
+        p1_sets_to_win_match = max(0, sets_to_win - p1_sets_won)
+        p2_sets_to_win_match = max(0, sets_to_win - p2_sets_won)
         
         # Quanto manca a vincere il set corrente (approssimazione)
         p1_games_to_win_set = max(0, 6 - p1_games) if p1_games < 6 else 0
@@ -264,11 +268,11 @@ def create_tennis_features(df, lstm_probs_df=None):
         p2_match_point = 0
         
         # TIE-BREAK logic
-        # Nel 5° set (2-2): tie-break solo a 12-12 (regola Wimbledon dal 2019)
+        # Nel set decisivo (es. 2-2 per best-of-5, 1-1 per best-of-3): tie-break solo a 12-12 (regola Wimbledon dal 2019)
         # Negli altri set: tie-break a 6-6
-        in_fifth_set = (p1_sets_won == 2 and p2_sets_won == 2)
-        in_tiebreak = ((p1_games == 6 and p2_games == 6 and not in_fifth_set) or 
-                       (p1_games == 12 and p2_games == 12 and in_fifth_set))
+        in_decisive_set = (p1_sets_won == (sets_to_win - 1) and p2_sets_won == (sets_to_win - 1))
+        in_tiebreak = ((p1_games == 6 and p2_games == 6 and not in_decisive_set) or 
+                       (p1_games == 12 and p2_games == 12 and in_decisive_set))
         
         # Feature TIE-BREAK: vantaggio nel tie-break (molto importante!)
         tiebreak_point_diff = 0
@@ -276,9 +280,9 @@ def create_tennis_features(df, lstm_probs_df=None):
             tiebreak_point_diff = p1_point_val - p2_point_val  # Può essere negativo
         
         # Verifica se un giocatore può vincere il match vincendo questo punto
-        # Condizione: avere già 2 set vinti
-        p1_can_win_match = (p1_sets_won == 2)  # P1 ha 2 set
-        p2_can_win_match = (p2_sets_won == 2)  # P2 ha 2 set
+        # Condizione: avere già (sets_to_win - 1) set vinti
+        p1_can_win_match = (p1_sets_won == (sets_to_win - 1))
+        p2_can_win_match = (p2_sets_won == (sets_to_win - 1))
         
         if p1_can_win_match:
             if in_tiebreak:
@@ -287,33 +291,33 @@ def create_tennis_features(df, lstm_probs_df=None):
                     p1_match_point = 1
             else:
                 # Game normale: match point se questo punto mi fa vincere il game che mi fa vincere il set
-                # Nel 5° set: devo essere avanti di almeno 1 game E avere 40+ per vincere
-                if in_fifth_set:
-                    # Nel 5° set serve vantaggio di almeno 1 game
+                # Nel set decisivo: devo essere avanti di almeno 1 game E avere 40+ per vincere
+                if in_decisive_set:
+                    # Nel set decisivo serve vantaggio di almeno 1 game
                     if p1_games >= 5 and p1_games > p2_games:
                         if p1_point_val >= 3 and p1_point_val > p2_point_val:
                             p1_match_point = 1
                 else:
-                    # Set normali (1-4): posso vincere a 6
+                    # Set normali: posso vincere a 6
                     if p1_games >= 5 and p1_games > p2_games:
                         if p1_point_val >= 3 and p1_point_val > p2_point_val:
                             p1_match_point = 1
         
         if p2_can_win_match:
             if in_tiebreak:
-                # Nel tie-break (solo set 1-4): match point se ho almeno 6 punti E almeno 1 punto di vantaggio
+                # Nel tie-break: match point se ho almeno 6 punti E almeno 1 punto di vantaggio
                 if p2_point_val >= 6 and p2_point_val > p1_point_val:
                     p2_match_point = 1
             else:
                 # Game normale: match point se questo punto mi fa vincere il game che mi fa vincere il set
-                # Nel 5° set: devo essere avanti di almeno 1 game E avere 40+ per vincere
-                if in_fifth_set:
-                    # Nel 5° set serve vantaggio di almeno 1 game
+                # Nel set decisivo: devo essere avanti di almeno 1 game E avere 40+ per vincere
+                if in_decisive_set:
+                    # Nel set decisivo serve vantaggio di almeno 1 game
                     if p2_games >= 5 and p2_games > p1_games:
                         if p2_point_val >= 3 and p2_point_val > p1_point_val:
                             p2_match_point = 1
                 else:
-                    # Set normali (1-4): posso vincere a 6
+                    # Set normali: posso vincere a 6
                     if p2_games >= 5 and p2_games > p1_games:
                         if p2_point_val >= 3 and p2_point_val > p1_point_val:
                             p2_match_point = 1
@@ -362,8 +366,8 @@ def create_tennis_features(df, lstm_probs_df=None):
             game_pressure = 2
         
         # 5. Chi può vincere il match vincendo questo set?
-        p1_can_win_match_this_set = 1 if p1_sets_won == 2 else 0
-        p2_can_win_match_this_set = 1 if p2_sets_won == 2 else 0
+        p1_can_win_match_this_set = 1 if p1_sets_won == (sets_to_win - 1) else 0
+        p2_can_win_match_this_set = 1 if p2_sets_won == (sets_to_win - 1) else 0
         match_on_the_line = p1_can_win_match_this_set or p2_can_win_match_this_set
         
         # 6. Momentum shift potential - quanto può cambiare la situazione
@@ -745,7 +749,7 @@ def load_and_prepare_data(data_dir='data', preprocessed_file='data/tennis_featur
             
             # Crea feature (con LSTM probs se disponibili)
             try:
-                features, feature_names = create_tennis_features(match_data, lstm_probs_df)
+                features, feature_names = create_tennis_features(match_data, lstm_probs_df, gender=gender)
                 
                 # Determina il vincitore
                 winner = determine_match_winner(match_data)

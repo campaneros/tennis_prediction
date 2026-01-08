@@ -481,7 +481,7 @@ def load_model(model_path):
     return model_data['model'], model_data['feature_names']
 
 
-def predict_match(match_data, model, lstm_probs_df=None):
+def predict_match(match_data, model, lstm_probs_df=None, gender='male'):
     """
     Fa predizioni punto per punto su una partita.
     
@@ -489,6 +489,7 @@ def predict_match(match_data, model, lstm_probs_df=None):
         match_data: DataFrame con i dati del match
         model: Modello addestrato
         lstm_probs_df: DataFrame con probabilità LSTM
+        gender: 'male' (best-of-5) or 'female' (best-of-3)
     """
     # Determina quante feature si aspetta il modello
     n_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else None
@@ -515,20 +516,31 @@ def predict_match(match_data, model, lstm_probs_df=None):
         p2_games = row['P2GamesWon']
         p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
         
-        # Situazione 5° set: match finito se qualcuno arriva a 13+ (o vantaggio di 2 su 12+)
-        in_fifth = (p1_sets == 2 and p2_sets == 2)
-        if in_fifth and (p1_games >= 13 or p2_games >= 13):
-            if p1_games > p2_games:
-                p1_probs[i] = 1.0
-                p2_probs[i] = 0.0
-            else:
-                p1_probs[i] = 0.0
-                p2_probs[i] = 1.0
+        # Determina set necessari per vincere
+        sets_to_win = 2 if gender == 'female' else 3
+        
+        # Se qualcuno ha vinto abbastanza set, forza probabilità
+        if p1_sets >= sets_to_win:
+            p1_probs[i] = 1.0
+            p2_probs[i] = 0.0
+        elif p2_sets >= sets_to_win:
+            p1_probs[i] = 0.0
+            p2_probs[i] = 1.0
+        # Situazione 5° set (solo maschi): match finito se qualcuno arriva a 13+ (o vantaggio di 2 su 12+)
+        elif gender == 'male':
+            in_fifth = (p1_sets == 2 and p2_sets == 2)
+            if in_fifth and (p1_games >= 13 or p2_games >= 13):
+                if p1_games > p2_games:
+                    p1_probs[i] = 1.0
+                    p2_probs[i] = 0.0
+                else:
+                    p1_probs[i] = 0.0
+                    p2_probs[i] = 1.0
     
     return p1_probs, p2_probs
 
 
-def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interval=50):
+def predict_match_causal(match_data, model, lstm_probs_df=None, gender='male', progress_interval=50):
     """
     Fa predizioni punto per punto in modo CAUSALE: per predire il punto i,
     usa SOLO le informazioni dei punti da 0 a i-1 (nessuna informazione futura).
@@ -539,6 +551,7 @@ def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interva
         match_data: DataFrame con i dati del match
         model: Modello addestrato
         lstm_probs_df: DataFrame con probabilità LSTM (opzionale)
+        gender: 'male' (best-of-5) or 'female' (best-of-3)
         progress_interval: Ogni quanti punti stampare il progresso
     
     Returns:
@@ -592,15 +605,16 @@ def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interva
             print(f"  Processati {i+1}/{n_points} punti...")
     
     # Forza probabilità SOLO per il punto finale quando il match è finito
+    sets_to_win = 2 if gender == 'female' else 3
     for i in range(n_points):
         row = match_data.iloc[i]
         p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
         
-        # Se qualcuno ha vinto il match (3 set), forza probabilità a 1.0
-        if p1_sets >= 3:
+        # Se qualcuno ha vinto il match, forza probabilità a 1.0
+        if p1_sets >= sets_to_win:
             p1_probs[i] = 1.0
             p2_probs[i] = 0.0
-        elif p2_sets >= 3:
+        elif p2_sets >= sets_to_win:
             p1_probs[i] = 0.0
             p2_probs[i] = 1.0
     
@@ -611,15 +625,15 @@ def predict_match_causal(match_data, model, lstm_probs_df=None, progress_interva
         p2_games = row['P2GamesWon']
         p1_sets, p2_sets = calculate_sets_won(match_data, i+1)
         
-        # Se qualcuno ha vinto il match (3 set), forza probabilità a 1.0
-        if p1_sets >= 3:
+        # Se qualcuno ha vinto il match, forza probabilità a 1.0
+        if p1_sets >= sets_to_win:
             p1_probs[i] = 1.0
             p2_probs[i] = 0.0
-        elif p2_sets >= 3:
+        elif p2_sets >= sets_to_win:
             p1_probs[i] = 0.0
             p2_probs[i] = 1.0
-        # Nel 5° set, forza quando qualcuno arriva a 13+ games
-        elif (p1_sets == 2 and p2_sets == 2) and (p1_games >= 13 or p2_games >= 13):
+        # Nel 5° set (solo maschi), forza quando qualcuno arriva a 13+ games
+        elif gender == 'male' and (p1_sets == 2 and p2_sets == 2) and (p1_games >= 13 or p2_games >= 13):
             if p1_games > p2_games:
                 p1_probs[i] = 1.0
                 p2_probs[i] = 0.0
@@ -981,15 +995,62 @@ def main():
     # Reset index
     match_data = match_data.reset_index(drop=True)
     
+    # Controlla se manca l'ultimo punto (match finito ma ultimo punto non registrato)
+    # Questo può accadere quando il vincitore vince il punto finale
+    last_row = match_data.iloc[-1]
+    
+    # Determina quanti set sono necessari per vincere basandosi sul genere
+    sets_to_win = 2 if args.gender == 'female' else 3
+    
+    # Conta i set vinti
+    p1_sets = 0
+    p2_sets = 0
+    for set_num in range(1, 6):  # Max 5 set
+        set_col = f'Set{set_num}'
+        if set_col in match_data.columns:
+            set_val = last_row.get(set_col, '')
+            if pd.notna(set_val) and set_val != '':
+                try:
+                    games = str(set_val).split('-')
+                    if len(games) == 2:
+                        p1_games = int(games[0])
+                        p2_games = int(games[1])
+                        if p1_games > p2_games:
+                            p1_sets += 1
+                        elif p2_games > p1_games:
+                            p2_sets += 1
+                except:
+                    pass
+    
+    # Se uno dei due ha vinto abbastanza set ma l'ultimo punto non ha SetWinner,
+    # aggiungi un punto finale con vittoria del vincitore del match
+    if (p1_sets >= sets_to_win or p2_sets >= sets_to_win) and last_row.get('SetWinner', 0) == 0:
+        print(f"  ⚠️  Match completato ma manca punto finale. Aggiungo punto con vittoria di P{2 if p2_sets >= sets_to_win else 1}")
+        
+        # Crea una copia dell'ultimo punto
+        final_point = last_row.copy()
+        
+        # Aggiorna il vincitore del punto e del set
+        match_winner = 2 if p2_sets >= sets_to_win else 1
+        final_point['PointWinner'] = match_winner
+        final_point['SetWinner'] = match_winner
+        
+        # Incrementa il punto
+        final_point['PointNumber'] = last_row['PointNumber'] + 1
+        
+        # Aggiungi alla fine
+        match_data = pd.concat([match_data, pd.DataFrame([final_point])], ignore_index=True)
+        print(f"  Numero di punti aggiornato: {len(match_data)}")
+    
     # Fa le predizioni
     if args.causal:
         print("\n🔍 Modalità CAUSALE attiva:")
         print("  Per ogni punto, usa SOLO le informazioni dei punti precedenti")
         print("  Questa è la modalità corretta per predizioni real-time/online\n")
-        p1_probs, p2_probs = predict_match_causal(match_data, model, lstm_probs_df)
+        p1_probs, p2_probs = predict_match_causal(match_data, model, lstm_probs_df, gender=args.gender)
     else:
         print("\nCalculating predictions (modalità standard)...")
-        p1_probs, p2_probs = predict_match(match_data, model, lstm_probs_df)
+        p1_probs, p2_probs = predict_match(match_data, model, lstm_probs_df, gender=args.gender)
     
     print(f"\nRisultati:")
     print(f"  P1 probabilità iniziale: {p1_probs[0]:.1%}")
